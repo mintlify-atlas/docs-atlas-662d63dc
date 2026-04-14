@@ -1,0 +1,178 @@
+---
+title: "HR agent: vacation booking and benefits management"
+description: "The HR specialist handles vacation booking, leave balance checks, and benefits queries. The orchestrator delegates any HR-related request to this agent."
+---
+
+The HR agent is a domain specialist that handles all human-resources tasks in the Multiagente system. When a user asks about booking vacation time, checking remaining leave, or reviewing their employee benefits, the orchestrator delegates the request to this agent. The HR agent runs in isolated worker mode with its own context window and a set of three purpose-built tools backed by your HR system API.
+
+## Delegation description
+
+The orchestrator's AI reads the following description to decide when to route a request to the HR agent:
+
+```
+Delegate HR-related tasks to the HR specialist.
+Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.
+```
+
+## SubAgent definition
+
+```typescript
+export const hrAgent = new SubAgent({
+  name: "hr",
+  description: `Delegate HR-related tasks to the HR specialist.
+Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.`,
+  instructions: `You are an HR specialist.
+...`,
+  tools: [bookVacation, checkVacationBalance, getBenefits],
+});
+```
+
+## Available tools
+
+<CardGroup cols={2}>
+  <Card title="bookVacation" icon="calendar-plus">
+    Books vacation time for an employee between two dates and returns a confirmation number.
+  </Card>
+  <Card title="checkVacationBalance" icon="calendar-check">
+    Returns total, used, and remaining vacation days for an employee.
+  </Card>
+  <Card title="getBenefits" icon="heart-pulse">
+    Retrieves the full list of benefits available to an employee.
+  </Card>
+</CardGroup>
+
+### bookVacation
+
+Books vacation time for an employee.
+
+**Input**
+
+<ParamField path="body.employeeId" type="string" required>
+  The employee ID of the person requesting vacation.
+</ParamField>
+
+<ParamField path="body.startDate" type="string" required>
+  Vacation start date in `YYYY-MM-DD` format.
+</ParamField>
+
+<ParamField path="body.endDate" type="string" required>
+  Vacation end date in `YYYY-MM-DD` format.
+</ParamField>
+
+**Output**
+
+<ResponseField name="success" type="boolean" required>
+  Whether the vacation was successfully booked.
+</ResponseField>
+
+<ResponseField name="confirmationNumber" type="string" required>
+  Unique confirmation number for the booking (e.g. `VAC-1718000000000`).
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable confirmation message.
+</ResponseField>
+
+---
+
+### checkVacationBalance
+
+Checks the remaining vacation days for an employee.
+
+**Input**
+
+<ParamField path="body.employeeId" type="string" required>
+  The employee ID to look up.
+</ParamField>
+
+**Output**
+
+<ResponseField name="totalDays" type="number" required>
+  Total vacation days allocated for the year.
+</ResponseField>
+
+<ResponseField name="usedDays" type="number" required>
+  Vacation days already taken.
+</ResponseField>
+
+<ResponseField name="remainingDays" type="number" required>
+  Vacation days still available.
+</ResponseField>
+
+---
+
+### getBenefits
+
+Retrieves employee benefits information.
+
+**Input**
+
+<ParamField path="body.employeeId" type="string" required>
+  The employee ID to look up.
+</ParamField>
+
+**Output**
+
+<ResponseField name="benefits" type="string[]" required>
+  List of benefits available to the employee (e.g. health insurance, 401(k), PTO).
+</ResponseField>
+
+## Example interaction
+
+A user sends:
+
+> "I'd like to book vacation from December 20 to December 27."
+
+The orchestrator identifies this as an HR task and delegates it. Because `employeeId` is missing, the HR agent returns `needsInput: true` and the orchestrator relays the question back:
+
+> "What is your employee ID?"
+
+After the user provides it, the orchestrator delegates again with all required fields. The agent calls `bookVacation` and returns the confirmation number to the orchestrator, which presents it to the user.
+
+<Tip>The orchestrator never exposes `needsInput` or internal field names to the user — it rephrases questions naturally.</Tip>
+
+## Agent instructions
+
+The HR agent's AI runs under the following system prompt when executing in worker mode.
+
+<Accordion title="Full system prompt">
+
+```
+You are an HR specialist.
+
+## Capabilities
+- Book vacation (requires: employeeId, startDate, endDate)
+- Check vacation balance (requires: employeeId)
+- Get benefits info (requires: employeeId)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your employee ID?', 'What dates would you like off?'] }
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+
+const result = await bookVacation({ employeeId, startDate, endDate })
+return { action: 'done', success: true, result: 'Vacation booked', data: result }
+```
+
+</Accordion>
+
+## `needsInput` flow
+
+When the HR agent cannot complete a task because required inputs are missing, it returns this pattern immediately — without calling any tool:
+
+```typescript
+return {
+  action: 'done',
+  success: false,
+  needsInput: true,
+  result: 'Need more information',
+  questions: ['What is your employee ID?', 'What dates would you like off?']
+}
+```
+
+The orchestrator receives this result and relays the questions to the user. Once the user answers, the orchestrator re-delegates with the complete inputs.
+
+<Note>All three HR tools require `employeeId`. If the user has not provided it, the agent always requests it before calling any tool.</Note>

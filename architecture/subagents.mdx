@@ -1,0 +1,218 @@
+---
+title: "SubAgent pattern: isolated specialist worker execution"
+description: "How the SubAgent class encapsulates specialist logic, runs in worker mode with its own context window, and returns typed results back to the orchestrator."
+---
+
+A `SubAgent` is a self-contained specialist agent: it has its own system prompt, its own set of tools, and its own isolated `execute()` loop. The orchestrator never sees a specialist's internal instructions or tools — it only sees the `name` and `description` that the specialist exposes through `asTool()`. This isolation is what allows you to add, remove, or swap specialists without modifying the orchestrator and without risking that one specialist's output leaks into another's context window.
+
+## Defining a SubAgent
+
+You instantiate a `SubAgent` with a `SubAgentConfig` and export it from `src/agents/`. The HR specialist is a representative example:
+
+```typescript
+// src/agents/hr.ts
+import { SubAgent } from "../subagent";
+
+export const hrAgent = new SubAgent({
+  name: "hr",
+  description: `Delegate HR-related tasks to the HR specialist.
+Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.`,
+  instructions: `You are an HR specialist.
+
+## Capabilities
+- Book vacation (requires: employeeId, startDate, endDate)
+- Check vacation balance (requires: employeeId)
+- Get benefits info (requires: employeeId)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+\`\`\`
+return { action: 'done', success: false, needsInput: true, result: 'Need more information',
+         questions: ['What is your employee ID?', 'What dates would you like off?'] }
+\`\`\`
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+\`\`\`
+const result = await bookVacation({ employeeId, startDate, endDate })
+return { action: 'done', success: true, result: 'Vacation booked', data: result }
+\`\`\``,
+  tools: [bookVacation, checkVacationBalance, getBenefits],
+});
+```
+
+<Note>
+  The `description` field is what the orchestrator's AI reads to decide when to delegate. The `instructions` field is what the specialist's own AI reads when running in worker mode. Keep the description short and task-focused; keep the instructions detailed.
+</Note>
+
+The full `SubAgentConfig` type:
+
+```typescript
+type SubAgentConfig = {
+  name: string;           // Becomes the tool name as `{name}_agent`
+  description: string;    // Shown to the orchestrator AI
+  instructions: string;   // System prompt for the specialist's execute() loop
+  tools?: Autonomous.Tool[];    // Domain tools — scoped to this agent only
+  knowledge?: Knowledge[];      // RAG knowledge sources
+  maxIterations?: number;       // Default: 10
+};
+```
+
+## Worker mode
+
+When you call `subAgent.run()`, the specialist executes with `mode: "worker"`:
+
+```typescript
+const result = await execute({
+  mode: "worker",
+  instructions: `${this.config.instructions}
+
+## Your Task
+${input.task}
+
+## Context
+${contextStr}
+
+## How to Complete
+1. Use your available tools to accomplish the task
+2. When finished, return via the "done" exit with your results
+3. If you need more information from the user, set needsInput=true and provide questions
+`,
+  tools: this.config.tools,
+  knowledge: this.config.knowledge,
+  exits: [SubAgentExit],
+  iterations: this.config.maxIterations,
+  hooks: { onTrace: /* ... */ },
+});
+```
+
+Worker mode enforces three constraints:
+
+| Constraint | Effect |
+|---|---|
+| No conversation transcript | The specialist cannot read prior messages from the user or other agents. |
+| No `conversation.send()` | The specialist cannot send messages to the user directly. |
+| Must exit via `SubAgentExit` | Results are returned as structured data, not as natural language output. |
+
+These constraints are what keep the orchestrator in full control. Without them, two specialists running in sequence could contradict each other or expose internal reasoning to the user.
+
+## The run() method
+
+`run()` wraps the specialist's `execute()` loop with lifecycle tracking and real-time progress streaming.
+
+<Steps>
+  <Step title="Generate executionId">
+    A unique `executionId` is generated (`exec-{timestamp}-{random}`) to group all step messages from this invocation. The frontend uses it to render a single execution card.
+  </Step>
+  <Step title="Emit a start step">
+    A `"start"` step message is sent immediately so the UI shows the specialist is working, before any tools are called.
+  </Step>
+  <Step title="Run execute() with onTrace">
+    The specialist's AI loop runs. The `onTrace` hook fires synchronously for each trace event, converting them into step messages:
+    - `comment` traces → `💭 {comment}` (the AI's internal reasoning)
+    - `think_signal` traces → `🤔 thinking...` (tool handlers signaling the AI)
+    - `tool_call` traces → `🔧 {tool}({input}) → {output}` (truncated)
+  </Step>
+  <Step title="Extract result from SubAgentExit">
+    After `execute()` resolves, `result.is(SubAgentExit)` checks whether the AI used the shared exit. If it did, the typed output is extracted. If the iteration limit was hit without an exit, a fallback with `needsInput: true` is returned instead.
+  </Step>
+  <Step title="Emit an end step">
+    A final `"end"` step is sent with the total `stepCount` and an icon indicating success (`✅`), failure (`❌`), or a clarification request (`⚠️`).
+  </Step>
+</Steps>
+
+## SubAgentExit — the shared exit point
+
+All specialists share a single exit definition:
+
+```typescript
+export const SubAgentExit = new Autonomous.Exit({
+  name: "done",
+  description: "Use this when you have completed the task or need to return results to the orchestrator",
+  schema: SubAgentOutputSchema,
+});
+```
+
+Using one shared exit (instead of per-specialist exits) keeps the `SubAgent` framework generic. Every specialist returns the same shape regardless of its domain:
+
+```typescript
+const SubAgentOutputSchema = z.object({
+  success: z.boolean(),
+  result: z.string(),
+  data: z.any().optional(),
+  needsInput: z.boolean().optional(),
+  questions: z.array(z.string()).optional(),
+});
+```
+
+The orchestrator always knows what to expect. It checks `needsInput` to decide whether to relay questions to the user or present the final `result`.
+
+## asTool() — dependency injection
+
+`asTool()` is the bridge between a standalone `SubAgent` module and the orchestrator's `execute()` loop:
+
+```typescript
+// In src/conversations/index.ts
+tools: [
+  hrAgent.asTool(execute, step),
+  itAgent.asTool(execute, step),
+  // ...
+]
+```
+
+The method wraps the specialist in an `Autonomous.Tool` the orchestrator can call:
+
+```typescript
+asTool(execute: Autonomous.ConvoExecuteFn, step: StepFn): Autonomous.Tool {
+  const runner = this.createRunner(execute, step);
+
+  return new Autonomous.Tool({
+    name: `${this.config.name}_agent`,   // e.g., "hr_agent"
+    description: this.config.description,
+    input: SubAgentInputSchema,
+    output: SubAgentOutputSchema,
+    handler: runner,
+  });
+}
+```
+
+The dependency injection pattern means `execute` and `step` come from the conversation handler at call time, not from the `SubAgent` definition. This lets you define specialists as standalone modules in `src/agents/` with no knowledge of the conversation context they'll eventually run in.
+
+<Info>
+  All specialists share the same `SubAgentInputSchema`: `{ task: string, context?: Record<string, any> }`. The orchestrator's AI fills `task` with the natural language request and `context` with any structured data from prior turns (for example, an employee ID the user already provided).
+</Info>
+
+## needsInput — multi-turn clarification
+
+Because specialists run in worker mode, they cannot ask the user for missing information directly. The `needsInput` / `questions` fields are the mechanism they use to signal that clarification is needed:
+
+<Steps>
+  <Step title="Specialist signals needsInput">
+    If the specialist's AI determines it lacks required information, it exits with `needsInput: true` and a `questions` array. For example, the HR agent needs an `employeeId` to check vacation balance.
+  </Step>
+  <Step title="Orchestrator relays questions">
+    The orchestrator's routing instructions say: `If specialist returns needsInput=true → ask user the specialist's questions`. The questions are presented to the user as a natural language prompt.
+  </Step>
+  <Step title="User answers">
+    The user's reply comes back as a new message. The orchestrator includes the answers in the `context` field when it calls the specialist again.
+  </Step>
+  <Step title="Specialist completes the task">
+    On the second invocation, the specialist has all the required information and exits with `success: true`.
+  </Step>
+</Steps>
+
+## Iteration limit fallback
+
+If a specialist reaches its `maxIterations` limit (default: 10) without calling `SubAgentExit`, `run()` returns a graceful fallback rather than throwing:
+
+```typescript
+// Hit iteration limit without exiting — treat as incomplete rather than failed
+output = {
+  success: false,
+  result: "The subagent could not complete the task within the iteration limit",
+  needsInput: true,
+  questions: ["Could you provide more details about what you need?"],
+};
+```
+
+The fallback sets `needsInput: true` so the orchestrator asks the user for clarification instead of silently failing or returning an error. This ensures the conversation continues even when a specialist gets stuck.

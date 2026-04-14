@@ -1,0 +1,206 @@
+---
+title: "Add a RAG knowledge base to a Multiagente specialist"
+description: "Add website or document knowledge sources to a SubAgent for retrieval-augmented generation so the AI can search real content when answering questions."
+---
+
+Retrieval-augmented generation (RAG) lets a subagent answer questions by searching a live knowledge source rather than relying on what the language model memorized during training. In Multiagente, the Docs agent uses this approach: it has no custom tools at all. Instead, it is given the Botpress documentation website as a knowledge source, and the ADK automatically provides a `search_knowledge` tool that the agent's AI can call at will. Any subagent can follow the same pattern — attach a `Knowledge` instance to the `SubAgent` constructor and the AI gains the ability to retrieve relevant content before composing its answer.
+
+## How the Docs agent uses a knowledge base
+
+The Docs agent is the simplest specialist in the project: it has no tools, only a knowledge source. Its entire implementation is two files.
+
+```typescript src/knowledge/botpress-docs.ts
+import { DataSource, Knowledge } from "@botpress/runtime";
+
+/**
+ * Crawls Botpress documentation from the sitemap.
+ * Content is synced at dev/deploy time and can be refreshed at runtime
+ * via KB.refresh(). The filter excludes the bulk LLM export file.
+ */
+const WebsiteSource = DataSource.Website.fromSitemap(
+  "https://www.botpress.com/docs/sitemap.xml",
+  {
+    filter: ({ url }) => !url.includes("llms-full.txt"),
+  }
+);
+
+/**
+ * When passed to execute() via the knowledge array, the AI gets an
+ * auto-generated search_knowledge tool that queries this KB. The docs
+ * agent uses this as its only data source — no custom tools needed.
+ */
+export const WebsiteKB = new Knowledge({
+  name: "Botpress",
+  description: "Knowledge base containing Botpress documentation.",
+  sources: [WebsiteSource],
+});
+```
+
+```typescript src/agents/docs.ts
+import { SubAgent } from "../subagent";
+import { WebsiteKB } from "../knowledge/botpress-docs";
+
+export const docsAgent = new SubAgent({
+  name: "docs",
+  description: `Delegate documentation questions to the docs specialist.
+Use for: Botpress documentation questions, how to use Botpress features, ADK questions, SDK questions, integration questions.`,
+  instructions: `You are a documentation specialist for Botpress.
+
+## Your Role
+Answer questions about Botpress by searching the official documentation.
+
+## Guidelines
+- Give concise, accurate answers
+- Use markdown with subheadings to format answers
+- Use code blocks for code examples
+- Don't use emojis or inline citations
+
+## When answering
+1. Search the knowledge base for relevant documentation
+2. Synthesize the information into a clear answer
+3. Include code examples when helpful`,
+  knowledge: [WebsiteKB],
+});
+```
+
+## The `Knowledge` class
+
+A `Knowledge` instance groups one or more data sources under a name the AI can reference. Pass it to the `SubAgent` constructor's `knowledge` array.
+
+```typescript
+import { Knowledge, DataSource } from "@botpress/runtime";
+
+const myKB = new Knowledge({
+  name: "Botpress",                                      // Identifier used internally
+  description: "Knowledge base containing Botpress documentation.", // What the AI reads to understand the KB's scope
+  sources: [WebsiteSource],                              // One or more DataSource instances
+});
+```
+
+The `description` field helps the AI decide whether to search this knowledge base for a given query. Be specific about what content is indexed.
+
+## Website data source
+
+`DataSource.Website.fromSitemap()` crawls a site starting from its XML sitemap and indexes each page it discovers. The optional `filter` callback lets you exclude URLs that would add noise or inflate the index unnecessarily.
+
+```typescript
+const WebsiteSource = DataSource.Website.fromSitemap(
+  "https://www.botpress.com/docs/sitemap.xml",
+  {
+    // Exclude the bulk LLM export file — it duplicates all other content
+    filter: ({ url }) => !url.includes("llms-full.txt"),
+  }
+);
+```
+
+The `filter` function receives an object with a `url` string and must return `true` to include the page or `false` to skip it. Use it to remove changelog entries, auto-generated pages, or any URL pattern that does not belong in the knowledge base.
+
+<Note>
+  Content is crawled and indexed at dev/deploy time, not on every request. If the source website changes, you need to refresh the knowledge base — see [Refreshing knowledge](#refreshing-knowledge) below.
+</Note>
+
+## The `search_knowledge` auto-tool
+
+When you pass a `knowledge` array to `execute()`, the Botpress ADK automatically injects a `search_knowledge` tool into the agent's available tools. You do not define this tool yourself — it appears automatically, and the agent's AI calls it whenever it determines a search would help answer the question.
+
+```typescript src/subagent/subagent.ts (excerpt)
+const result = await execute({
+  mode: "worker",
+  instructions: `${this.config.instructions} ...`,
+  tools: this.config.tools,
+  knowledge: this.config.knowledge,   // <— passes knowledge sources to execute()
+  exits: [SubAgentExit],
+  iterations: this.config.maxIterations,
+});
+```
+
+The Docs agent has no entries in `tools` at all. Its AI calls `search_knowledge` on its own, synthesizes the retrieved content, and returns a structured answer via `SubAgentExit`.
+
+## How to add a knowledge base to any agent
+
+Follow this four-step pattern to attach a knowledge source to any existing or new specialist.
+
+<Steps>
+  <Step title="Create a knowledge file">
+    Add a new file in `src/knowledge/`. Name it after the domain or source, for example `src/knowledge/company-handbook.ts`.
+
+    ```typescript src/knowledge/company-handbook.ts
+    import { DataSource, Knowledge } from "@botpress/runtime";
+
+    const HandbookSource = DataSource.Website.fromSitemap(
+      "https://handbook.example.com/sitemap.xml",
+      {
+        filter: ({ url }) => !url.includes("/archive/"),
+      }
+    );
+
+    export const HandbookKB = new Knowledge({
+      name: "CompanyHandbook",
+      description: "Knowledge base containing the company employee handbook.",
+      sources: [HandbookSource],
+    });
+    ```
+  </Step>
+
+  <Step title="Import and attach to your SubAgent">
+    Import the `Knowledge` instance and add it to the `knowledge` array in the `SubAgent` constructor.
+
+    ```typescript src/agents/hr.ts (with knowledge added)
+    import { z, Autonomous } from "@botpress/runtime";
+    const { Tool } = Autonomous;
+    import { SubAgent } from "../subagent";
+    import { HandbookKB } from "../knowledge/company-handbook";
+
+    export const hrAgent = new SubAgent({
+      name: "hr",
+      description: `Delegate HR-related tasks to the HR specialist.
+    Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.`,
+      instructions: `You are an HR specialist. ...`,
+      tools: [bookVacation, checkVacationBalance, getBenefits],
+      knowledge: [HandbookKB],   // <— agent now has both tools and knowledge
+    });
+    ```
+
+    You can pass multiple `Knowledge` instances in the array. The AI will receive a `search_knowledge` tool that queries all of them.
+  </Step>
+</Steps>
+
+## Tools vs. knowledge
+
+<Tip>
+  Use **tools** for structured data you can fetch on demand — HR systems, ticketing APIs, databases, anything where you need to pass specific parameters and get a typed response back. Use **knowledge** for unstructured text — documentation, manuals, FAQs, policy documents — where the content is static and the AI needs to search and synthesize rather than query.
+</Tip>
+
+A specialist can have both. The HR agent could expose `bookVacation` as a tool (structured, parameterized action) and attach a `HandbookKB` knowledge source (unstructured policy text) simultaneously. The AI will use tools when it needs to take an action and `search_knowledge` when it needs to look something up.
+
+## Refreshing knowledge
+
+Knowledge content is indexed when you run `adk dev` or `adk deploy`. If the source website updates and you want the agent to reflect those changes without redeploying, call `KB.refresh()` on the `Knowledge` instance at runtime:
+
+```typescript
+import { WebsiteKB } from "../knowledge/botpress-docs";
+
+// Trigger a re-crawl and re-index of the knowledge source
+await WebsiteKB.refresh();
+```
+
+<Warning>
+  Refreshing a large knowledge base (hundreds of pages) can take several minutes and consume significant API quota. Trigger refreshes deliberately — for example, from a scheduled workflow or a privileged admin command — rather than on every conversation.
+</Warning>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Docs agent" icon="book" href="/agents/docs">
+    The reference implementation that uses only a knowledge base, with no custom tools.
+  </Card>
+  <Card title="Custom tools" icon="wrench" href="/guides/custom-tools">
+    How to build typed tools for structured, parameterized data sources.
+  </Card>
+  <Card title="Add a new agent" icon="plus" href="/guides/adding-an-agent">
+    End-to-end walkthrough for creating a new specialist, including wiring in knowledge.
+  </Card>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    How specialists stay isolated in worker mode and return results to the orchestrator.
+  </Card>
+</CardGroup>

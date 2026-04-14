@@ -1,0 +1,79 @@
+---
+title: "Multiagente architecture: overview and key decisions"
+description: "Learn the orchestrator-worker pattern: how the main agent routes requests, how specialists stay isolated in worker mode, and where HITL fits in."
+---
+
+Multiagente is built around a single architectural principle: one orchestrator owns the user-facing conversation, and every domain task is delegated to a self-contained specialist that runs in isolation. This separation keeps the conversation coherent, prevents specialists from leaking implementation details to the user, and gives the orchestrator full authority to synthesize results, handle errors, and escalate to a human agent when needed.
+
+## High-level message flow
+
+Every incoming message travels through a fixed pipeline before a response is sent.
+
+<Steps>
+  <Step title="Message arrives">
+    A user sends a message via the `chat.channel` or `webchat.channel` integration. The conversation handler in `src/conversations/index.ts` receives it and immediately checks whether HITL mode is active. If it is, the AI is bypassed entirely.
+  </Step>
+  <Step title="Orchestrator decides">
+    The orchestrator's `execute()` call evaluates the user's intent against its routing rules. Greetings, chitchat, and clarifying questions are handled directly. Domain-specific requests — HR, IT, Sales, Finance, or Docs — are delegated to the matching specialist. Signs of frustration or an explicit request for a human trigger the `escalateToHuman` tool.
+  </Step>
+  <Step title="Specialist executes in isolation">
+    The chosen specialist runs in `mode: "worker"` inside its own `execute()` loop. It has no access to the conversation transcript and cannot send messages to the user. It calls its domain tools, and when finished, exits via the shared `SubAgentExit` with a typed result.
+  </Step>
+  <Step title="Orchestrator synthesizes a reply">
+    The orchestrator receives the specialist's structured output and composes a single, coherent response. If the specialist signaled `needsInput: true`, the orchestrator relays the specialist's questions to the user instead of sending a final answer.
+  </Step>
+</Steps>
+
+## Directory structure
+
+The project follows the Botpress ADK convention, with each directory mapped to a distinct responsibility.
+
+```bash
+src/
+  conversations/   # Main message handler — the orchestrator lives here
+  agents/          # SubAgent definitions (HR, IT, Sales, Finance, Docs)
+  tools/           # AI-callable functions (e.g., escalateToHuman)
+  subagent/        # SubAgent class, types, schemas, and SubAgentExit
+  knowledge/       # RAG knowledge base sources
+  workflows/       # Long-running background processes
+  triggers/        # Event-based triggers
+  actions/         # Reusable business logic shared across handlers
+  tables/          # Database table definitions
+agent.config.ts    # Models, integrations, and global state schema
+```
+
+<AccordionGroup>
+  <Accordion title="src/conversations/ — the orchestrator">
+    `src/conversations/index.ts` is the single entry point for all user messages. It holds the HITL state schema, the routing `execute()` call, and the `onAfterTool` hook that transitions the conversation into HITL mode after `escalateToHuman` fires.
+  </Accordion>
+  <Accordion title="src/agents/ — specialist definitions">
+    Each file in `src/agents/` exports one `SubAgent` instance. The `name`, `description`, `instructions`, and `tools` are all scoped to that specialist. The orchestrator sees only the name and description when deciding whether to delegate.
+  </Accordion>
+  <Accordion title="src/subagent/ — the SubAgent framework">
+    `subagent.ts` contains the `SubAgent` class and the `run()` / `asTool()` methods. `types.ts` defines the shared input/output schemas, `StepData`, `StepFn`, and `SubAgentExit` — the single exit point all specialists use to return results.
+  </Accordion>
+  <Accordion title="src/tools/ — escalation and other tools">
+    `escalateTool.ts` exports the `escalateToHuman` tool. When the orchestrator's AI calls this tool, the `onAfterTool` hook fires and sets `hitlActive: true`, pausing all future AI processing for that conversation.
+  </Accordion>
+</AccordionGroup>
+
+## Key design decisions
+
+**Worker mode isolates specialists.** Each specialist runs with its own context window. It cannot read the conversation transcript, cannot call `conversation.send()`, and cannot contradict what another specialist said. The orchestrator is the only voice the user ever hears.
+
+**Specialists are defined as standalone modules.** A `SubAgent` is instantiated in `src/agents/` with no dependency on any specific conversation context. The `asTool(execute, step)` call at run time is where the conversation's `execute` function is injected — this is why you can add, remove, or reuse a specialist without touching the orchestrator.
+
+**A single shared exit enforces a uniform contract.** All five specialists exit via the same `SubAgentExit` with the same `SubAgentOutputSchema`. The orchestrator always knows the shape of the result: `success`, `result`, `data`, `needsInput`, `questions`.
+
+**HITL is state-driven, not flow-driven.** When `escalateToHuman` fires, a boolean flag (`hitlActive`) is written to conversation state. Every subsequent message is intercepted at the top of the handler before the AI is invoked at all, making it impossible for the orchestrator to accidentally resume while a human is still in control.
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Orchestrator" icon="shuffle" href="/architecture/orchestrator">
+    How the main conversation handler routes messages, invokes specialists, and manages HITL state.
+  </Card>
+  <Card title="SubAgent pattern" icon="boxes-stacked" href="/architecture/subagents">
+    How the `SubAgent` class encapsulates specialist logic and returns typed results to the orchestrator.
+  </Card>
+</CardGroup>

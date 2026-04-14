@@ -1,0 +1,93 @@
+---
+title: 'Enabling chat and webchat integrations in Multiagente'
+description: 'Multiagente enables chat and webchat integrations to receive messages from terminal sessions and browser widgets across both conversation channels.'
+---
+
+Multiagente accepts messages from two channels: a terminal-based API channel via the `chat` integration, and a browser widget via the `webchat` integration. Both are declared in `agent.config.ts` and both are listened to by the same conversation handler — the orchestrator treats them identically once a message arrives.
+
+## Integration configuration
+
+The `dependencies.integrations` block in `agent.config.ts` declares which integrations are installed and active:
+
+```typescript agent.config.ts
+dependencies: {
+  integrations: {
+    chat: { version: "chat@0.7.3", enabled: true },
+    webchat: { version: "webchat@0.3.0", enabled: true },
+  },
+},
+```
+
+Each entry maps an integration name to its pinned version string and an `enabled` flag. Setting `enabled: false` disables the integration without removing its declaration.
+
+## Chat integration (`chat@0.7.3`)
+
+The `chat` integration exposes `chat.channel` — a text-based API channel used for terminal and programmatic interactions. This is the channel that `adk chat` connects to when you run a test session from the command line.
+
+Use `chat.channel` when you need:
+- Terminal testing during development with `adk chat`
+- Programmatic API access to the agent from scripts or services
+- Integration with the `adk_send_message` MCP tool for automated testing
+
+## Webchat integration (`webchat@0.3.0`)
+
+The `webchat` integration exposes `webchat.channel` — a browser-rendered chat widget that end users interact with directly. Botpress Cloud hosts the widget and connects it to your deployed agent automatically once the integration is enabled.
+
+Use `webchat.channel` when you need:
+- A no-code browser interface for end users
+- Embedding a chat widget in a web application
+- Real-time user-facing conversations without building a custom frontend
+
+## How the conversation handler listens to both
+
+The main conversation handler in `src/conversations/index.ts` subscribes to both channels with a single array:
+
+```typescript src/conversations/index.ts
+export default new Conversation({
+  channel: ["chat.channel", "webchat.channel"],
+  state: z.object({
+    hitlActive: z.boolean().default(false),
+    hitlActivatedAt: z.number().optional(),
+    hitlMessageToUser: z.string().optional(),
+  }),
+  // ...
+});
+```
+
+The `channel` array tells the ADK runtime to route messages from either source into this handler. The handler itself checks `channel` at runtime when it needs to branch behaviour — for example, the HITL resume confirmation sends a response only when the channel is `chat.channel` or `webchat.channel`, which in practice covers both:
+
+```typescript src/conversations/index.ts
+if (channel === "chat.channel" || channel === "webchat.channel") {
+  await conversation.send({
+    type: "text",
+    payload: { text: "Listo, retomamos con el bot. Como te puedo ayudar?" },
+  });
+}
+```
+
+## Adding new integrations
+
+To add a third integration — for example Slack or WhatsApp — use the `adk_add_integration` MCP tool. It updates `agent.config.ts` automatically and installs the integration package:
+
+```
+adk_add_integration slack
+```
+
+Before adding an integration, use `adk_search_integrations` to find the correct name and available versions on the Botpress Hub:
+
+```
+adk_search_integrations slack
+```
+
+<Note>
+  After adding an integration, run `adk build` to regenerate types and then `adk deploy` to make the new channel available on Botpress Cloud.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Agent configuration" icon="settings" href="/config/agent-config">
+    See the full agent.config.ts field reference.
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/config/deployment">
+    Deploy your agent with the new integration enabled.
+  </Card>
+</CardGroup>

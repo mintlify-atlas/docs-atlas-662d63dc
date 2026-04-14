@@ -1,0 +1,102 @@
+{
+  "projectType": "framework",
+  "projectName": "Multiagente",
+  "projectDescription": "A multi-agent orchestrator built with the Botpress ADK that routes chat conversations to specialist AI agents (HR, IT, Sales, Finance, Docs) and escalates to human support via a HITL flow.",
+  "theme": "luma",
+  "primaryColor": "#45c455",
+  "lightColor": "#a4e0ac",
+  "darkColor": "#cfdedc",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/orchestrator",
+              "architecture/subagents"
+            ]
+          },
+          {
+            "group": "Specialist Agents",
+            "pages": [
+              "agents/hr",
+              "agents/it",
+              "agents/sales",
+              "agents/finance",
+              "agents/docs"
+            ]
+          },
+          {
+            "group": "HITL & Escalation",
+            "pages": [
+              "hitl/overview",
+              "hitl/resuming"
+            ]
+          },
+          {
+            "group": "Configuration & Deployment",
+            "pages": [
+              "config/agent-config",
+              "config/deployment",
+              "config/integrations"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "reference/subagent-class",
+              "reference/tools",
+              "reference/types"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/adding-an-agent",
+              "guides/custom-tools",
+              "guides/knowledge-base"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Orchestrator-worker multi-agent pattern with isolated execute() loops per specialist",
+    "Five built-in domain specialists: HR, IT, Sales, Finance, and Docs",
+    "Human-in-the-loop (HITL) escalation that pauses AI and routes to human support",
+    "Resume keywords to hand conversation back to the bot after HITL",
+    "RAG knowledge base via Botpress documentation for the Docs agent",
+    "needsInput/questions flow for multi-turn clarification without direct user contact",
+    "Real-time step tracing UI messages during subagent execution",
+    "Webchat and chat channel support via Botpress integrations"
+  ],
+  "publicApiSurface": [
+    "SubAgent class — src/subagent/subagent.ts",
+    "SubAgent.asTool(execute, step) — wraps a subagent as an Autonomous.Tool",
+    "SubAgent.run(input, execute, step) — runs the subagent in isolated worker mode",
+    "SubAgentConfig type — configuration shape for defining a SubAgent",
+    "SubAgentInputSchema — z.object({ task, context? })",
+    "SubAgentOutputSchema — z.object({ success, result, data?, needsInput?, questions? })",
+    "SubAgentExit — Autonomous.Exit used by all subagents to return results",
+    "escalateToHuman tool — src/tools/escalateTool.ts",
+    "hrAgent, itAgent, salesAgent, financeAgent, docsAgent — src/agents/index.ts",
+    "WebsiteKB — Knowledge base for Botpress docs (src/knowledge/botpress-docs.ts)",
+    "defineConfig (agent.config.ts) — configures models, state, integrations"
+  ]
+}

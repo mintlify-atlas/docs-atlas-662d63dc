@@ -1,0 +1,67 @@
+---
+title: "Multiagente: Botpress ADK Multi-Agent Orchestrator"
+description: "Multiagente is a Botpress ADK orchestrator using the orchestrator-worker pattern to route requests to domain specialists and escalate to humans via HITL."
+---
+
+Multiagente is an open-source orchestration system built with the Botpress ADK (TypeScript). It listens on chat and webchat channels, decides which specialist agent should handle each request, and hands off to a human agent when the situation demands it — all from a single conversation handler you can run locally and deploy to Botpress Cloud.
+
+## What Multiagente does
+
+Every incoming message flows through a central orchestrator that evaluates the user's intent and delegates work to the right specialist. The orchestrator stays invisible to the user — it never mentions agents or delegation.
+
+<CardGroup cols={2}>
+  <Card title="Domain routing" icon="sitemap">
+    The orchestrator reads each specialist's description and invokes the correct agent — HR, IT, Sales, Finance, or Docs — as a tool call, keeping routing logic out of your application code.
+  </Card>
+  <Card title="Isolated worker agents" icon="box-open">
+    Each specialist runs in its own `execute()` loop with its own context window, so workers never see the full conversation transcript and the orchestrator stays in control.
+  </Card>
+  <Card title="Human-in-the-loop (HITL)" icon="headset">
+    When a user asks for a human or shows frustration, the `escalateToHuman` tool pauses AI orchestration and holds the conversation until a human agent takes over.
+  </Card>
+  <Card title="Resume flow" icon="rotate-right">
+    Users can return control to the bot at any time by sending a resume keyword. The orchestrator clears HITL state and picks up the conversation naturally.
+  </Card>
+</CardGroup>
+
+## How the orchestrator-worker pattern works
+
+Multiagente separates concerns into two layers: an **orchestrator** that owns the conversation and **workers** (specialist agents) that own domain knowledge.
+
+The orchestrator receives every message and makes one of three decisions:
+
+1. **Handle directly** — greetings, clarifying questions, and general chitchat never leave the orchestrator.
+2. **Delegate to a specialist** — domain requests are routed to the matching worker agent, which runs in isolation and returns a structured result.
+3. **Escalate to a human** — if the user explicitly requests human support or frustration is detected, `escalateToHuman` is called, HITL state is saved, and the bot stops responding until a human resolves the issue.
+
+The specialist's result is synthesized by the orchestrator into a single coherent reply. The user sees one seamless response and never knows that multiple agents were involved.
+
+## Specialist agents
+
+Multiagente ships with five built-in domain agents. Each is defined in `src/agents/` and exposed to the orchestrator as a tool.
+
+| Agent | Domain | Example requests |
+|---|---|---|
+| **HR** | Vacation, leave balances, benefits, HR policies | "What's my vacation balance?" |
+| **IT** | Password resets, system status, support tickets, IT policies | "Reset my password" |
+| **Sales** | Promotions, products, quotes, orders | "What are the current promotions?" |
+| **Finance** | Expense reports, budgets, reimbursements | "Submit an expense report" |
+| **Docs** | Questions about the Botpress platform | "How do I add an integration?" |
+
+## Prerequisites
+
+Before you run Multiagente, make sure you have the following installed:
+
+- **Bun** — the JavaScript runtime and package manager used by this project. Install it from [bun.sh](https://bun.sh).
+- **ADK CLI** (`adk`) — the Botpress Agent Development Kit command-line tool. Required to run, build, and deploy the agent.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="quickstart">
+    Install dependencies, start the dev server, and send your first message in minutes.
+  </Card>
+  <Card title="Architecture overview" icon="sitemap" href="architecture/overview">
+    Deep-dive into the orchestrator conversation handler and how specialists are registered.
+  </Card>
+</CardGroup>

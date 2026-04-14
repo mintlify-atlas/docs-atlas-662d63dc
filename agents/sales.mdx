@@ -1,0 +1,245 @@
+---
+title: "Sales agent: promotions, product info, and order status"
+description: "The Sales specialist handles promotions, product info, quote generation, and order tracking. The orchestrator delegates all sales requests to this agent."
+---
+
+The Sales agent is a domain specialist that handles all commerce and customer-facing tasks in the Multiagente system. When a user asks about current promotions, wants details on a product, needs a formal price quote, or wants to track an existing order, the orchestrator delegates the request to this agent. The Sales agent runs in isolated worker mode with four tools designed to interface with your sales and CRM systems.
+
+## Delegation description
+
+The orchestrator's AI reads the following description to decide when to route a request to the Sales agent:
+
+```
+Delegate sales-related tasks to the Sales specialist.
+Use for: promotions, product info, price quotes, order status.
+```
+
+## SubAgent definition
+
+```typescript
+export const salesAgent = new SubAgent({
+  name: "sales",
+  description: `Delegate sales-related tasks to the Sales specialist.
+Use for: promotions, product info, price quotes, order status.`,
+  instructions: `You are a Sales specialist.
+...`,
+  tools: [getPromotions, getProductInfo, createQuote, checkOrderStatus],
+});
+```
+
+## Available tools
+
+<CardGroup cols={2}>
+  <Card title="getPromotions" icon="tag">
+    Returns all active sales promotions, discount percentages, promo codes, and validity dates.
+  </Card>
+  <Card title="getProductInfo" icon="box">
+    Looks up a product by ID or name and returns pricing, stock status, and description.
+  </Card>
+  <Card title="createQuote" icon="file-invoice-dollar">
+    Generates a formal sales quote for a customer with itemized pricing and optional discount.
+  </Card>
+  <Card title="checkOrderStatus" icon="truck">
+    Checks the current status of an order and returns tracking and estimated delivery.
+  </Card>
+</CardGroup>
+
+### getPromotions
+
+Returns all currently active promotions and discount codes.
+
+**Input**
+
+This tool requires no inputs.
+
+**Output**
+
+<ResponseField name="promotions" type="object[]" required>
+  List of active promotion records.
+  <Expandable title="properties">
+    <ResponseField name="name" type="string" required>
+      Promotion name (e.g. `Holiday Sale`, `New Customer`).
+    </ResponseField>
+    <ResponseField name="discount" type="string" required>
+      Discount description (e.g. `25% off`, `15% off first order`).
+    </ResponseField>
+    <ResponseField name="code" type="string">
+      Promotional code to apply at checkout, if applicable.
+    </ResponseField>
+    <ResponseField name="validUntil" type="string" required>
+      Expiry date (`YYYY-MM-DD`) or `Ongoing` for permanent promotions.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### getProductInfo
+
+Returns pricing and details for a specific product.
+
+**Input**
+
+<ParamField path="body.productId" type="string" required>
+  Product ID or product name to look up.
+</ParamField>
+
+**Output**
+
+<ResponseField name="product" type="object" required>
+  Full product record.
+  <Expandable title="properties">
+    <ResponseField name="id" type="string" required>
+      Product identifier.
+    </ResponseField>
+    <ResponseField name="name" type="string" required>
+      Product display name.
+    </ResponseField>
+    <ResponseField name="price" type="number" required>
+      Unit price in USD.
+    </ResponseField>
+    <ResponseField name="inStock" type="boolean" required>
+      Whether the product is currently available.
+    </ResponseField>
+    <ResponseField name="description" type="string" required>
+      Product description.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### createQuote
+
+Generates a sales quote for a customer, applying a promotional discount if a code is provided.
+
+**Input**
+
+<ParamField path="body.customerName" type="string" required>
+  Full name of the customer.
+</ParamField>
+
+<ParamField path="body.customerEmail" type="string" required>
+  Customer email address.
+</ParamField>
+
+<ParamField path="body.items" type="object[]" required>
+  List of line items for the quote. Each item requires a `productId` and `quantity`.
+</ParamField>
+
+<ParamField path="body.discountCode" type="string">
+  Optional promotional code to apply to the quote.
+</ParamField>
+
+**Output**
+
+<ResponseField name="quoteId" type="string" required>
+  Unique quote identifier (e.g. `QT-1718000000000`).
+</ResponseField>
+
+<ResponseField name="subtotal" type="number" required>
+  Pre-discount total in USD.
+</ResponseField>
+
+<ResponseField name="discount" type="number" required>
+  Discount amount applied in USD. `0` if no code was provided.
+</ResponseField>
+
+<ResponseField name="total" type="number" required>
+  Final total after discount in USD.
+</ResponseField>
+
+<ResponseField name="validDays" type="number" required>
+  Number of days the quote remains valid (30 days by default).
+</ResponseField>
+
+---
+
+### checkOrderStatus
+
+Checks the current status of an order by ID.
+
+**Input**
+
+<ParamField path="body.orderId" type="string" required>
+  The order ID to look up.
+</ParamField>
+
+**Output**
+
+<ResponseField name="orderId" type="string" required>
+  The order ID that was queried.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Current order status: `pending`, `processing`, `shipped`, or `delivered`.
+</ResponseField>
+
+<ResponseField name="estimatedDelivery" type="string">
+  Estimated delivery date in `YYYY-MM-DD` format, if available.
+</ResponseField>
+
+<ResponseField name="trackingNumber" type="string">
+  Carrier tracking number, if the order has shipped.
+</ResponseField>
+
+## Example interaction
+
+A user sends:
+
+> "Can you create a quote for 3 units of product SKU-42 for John Smith?"
+
+The orchestrator identifies this as a Sales task and delegates it. Because `customerEmail` is missing, the agent returns `needsInput: true`:
+
+> "What email address should we send the quote to?"
+
+Once the user provides the email, the orchestrator re-delegates with all required fields. The agent calls `createQuote` and returns the quote ID, totals, and validity period.
+
+<Tip>To apply a promotional discount, the user must supply a valid promo code. Use `getPromotions` first to retrieve active codes before generating a quote.</Tip>
+
+## Agent instructions
+
+The Sales agent's AI runs under the following system prompt when executing in worker mode.
+
+<Accordion title="Full system prompt">
+
+```
+You are a Sales specialist.
+
+## Capabilities
+- Get promotions (no requirements)
+- Get product info (requires: productId)
+- Create quote (requires: customerName, customerEmail, items)
+- Check order status (requires: orderId)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your order ID?'] }
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+
+const result = await getPromotions({})
+return { action: 'done', success: true, result: 'Here are current promotions', data: result }
+```
+
+</Accordion>
+
+## `needsInput` flow
+
+When the Sales agent is missing required inputs, it returns this pattern immediately without calling any tool:
+
+```typescript
+return {
+  action: 'done',
+  success: false,
+  needsInput: true,
+  result: 'Need more information',
+  questions: ['What is your order ID?']
+}
+```
+
+The orchestrator relays the questions to the user and re-delegates once the user provides the missing information.
+
+<Note>`getPromotions` has no required inputs and is called immediately. `getProductInfo` requires only `productId`, making it a single follow-up if the user has not already provided a product name or ID.</Note>

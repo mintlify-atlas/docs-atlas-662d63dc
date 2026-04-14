@@ -1,0 +1,236 @@
+---
+title: "SubAgent class — constructor, run(), and asTool() reference"
+description: "Full API reference for the SubAgent class — constructor, run(), asTool(), and the name and description getters used by the orchestrator."
+---
+
+The `SubAgent` class, defined in `src/subagent/subagent.ts`, is the core building block of the orchestrator-worker pattern in Multiagente. It wraps a specialist AI agent — giving it its own isolated `execute()` loop, scoped tools, and structured output contract — and exposes that specialist as an `Autonomous.Tool` the orchestrator can call by name. You never instantiate specialists differently; every domain agent (HR, IT, Sales, Finance, Docs) is a `SubAgent` configured at the module level and wired into the orchestrator at call time via `asTool()`.
+
+## Constructor
+
+```typescript
+new SubAgent(config: SubAgentConfig)
+```
+
+Creates a new specialist agent. The `config.maxIterations` default is applied here if omitted.
+
+<ParamField path="name" type="string" required>
+  Unique identifier for this specialist. Used as the tool name in the
+  orchestrator — the registered tool is called `{name}_agent` (e.g., `"hr"`
+  → `hr_agent`). The orchestrator's AI uses this name to identify which
+  specialist it called.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  Human-readable description of what this specialist handles. This is what
+  the orchestrator's AI reads at decision time to determine whether to
+  delegate the current task to this agent. Write it from the orchestrator's
+  perspective: "Use for: vacation booking, benefits questions."
+</ParamField>
+
+<ParamField path="instructions" type="string" required>
+  The system prompt injected into the specialist's isolated `execute()` loop
+  when `run()` is called. The specialist's AI never sees the conversation
+  transcript — only these instructions plus the task and context passed at
+  invocation time. Include capability lists and the `needsInput` return
+  pattern here.
+</ParamField>
+
+<ParamField path="tools" type="Autonomous.Tool[]">
+  Tools available exclusively to this specialist. These are not shared with
+  the orchestrator and are scoped to the worker's `execute()` call. Omit if
+  the specialist needs no tools (e.g., a knowledge-only agent).
+</ParamField>
+
+<ParamField path="knowledge" type="Knowledge[]">
+  RAG knowledge sources available to this specialist's `execute()` loop.
+  Passed directly to the Botpress ADK `execute()` call as the `knowledge`
+  field.
+</ParamField>
+
+<ParamField path="maxIterations" type="number" default="10">
+  Maximum number of AI iterations before the worker's `execute()` loop is
+  forced to exit. If the limit is reached without a `SubAgentExit`, `run()`
+  returns a fallback output with `success: false` and `needsInput: true`
+  rather than throwing.
+</ParamField>
+
+---
+
+## Getters
+
+### `get name(): string`
+
+Returns the value of `config.name` set in the constructor.
+
+```typescript
+const hrAgent = new SubAgent({ name: "hr", ... });
+console.log(hrAgent.name); // "hr"
+```
+
+### `get description(): string`
+
+Returns the value of `config.description` set in the constructor.
+
+```typescript
+console.log(hrAgent.description);
+// "Delegate HR-related tasks to the HR specialist. Use for: ..."
+```
+
+---
+
+## `run(input, execute, step)`
+
+```typescript
+async run(
+  input: { task: string; context?: Record<string, any> },
+  execute: Autonomous.ConvoExecuteFn,
+  step: StepFn
+): Promise<SubAgentOutput>
+```
+
+Runs the specialist in worker mode inside an isolated `execute()` loop. This method is called internally by the tool handler created in `asTool()` — you rarely call it directly.
+
+### Parameters
+
+<ParamField path="input.task" type="string" required>
+  The natural language task to delegate to this specialist. Injected verbatim
+  into the worker's instructions under the `## Your Task` heading.
+</ParamField>
+
+<ParamField path="input.context" type="Record<string, any>">
+  Structured data from prior interactions, such as an employee ID the user
+  already provided. Serialized as `key: value` pairs under the `## Context`
+  heading in the worker's instructions.
+</ParamField>
+
+<ParamField path="execute" type="Autonomous.ConvoExecuteFn" required>
+  The conversation's `execute` function, injected from the orchestrator. The
+  worker runs in `mode: "worker"` — a separate context window with no access
+  to the conversation transcript.
+</ParamField>
+
+<ParamField path="step" type="StepFn" required>
+  Callback used to emit real-time UI updates during the worker's execution.
+  Called on `"start"`, `"thinking"` (AI reasoning traces), `"tool"` (tool
+  call traces), and `"end"` steps.
+</ParamField>
+
+### What it does
+
+The method emits a `"start"` step, then calls `execute()` with `mode: "worker"`, the specialist's instructions, its scoped tools and knowledge, `SubAgentExit` as the only exit, and a trace hook that streams thinking and tool-call updates via `step()`.
+
+When `execute()` returns, `run()` checks `result.is(SubAgentExit)` to extract the typed output. If the iteration limit was hit without an exit, it returns the following fallback instead of throwing:
+
+```typescript
+{
+  success: false,
+  result: "The subagent could not complete the task within the iteration limit",
+  needsInput: true,
+  questions: ["Could you provide more details about what you need?"],
+}
+```
+
+A final `"end"` step is emitted with a success/failure/needs-input icon and the total step count.
+
+### Returns
+
+`Promise<SubAgentOutput>` — the structured result from the specialist. See [SubAgentOutput](/reference/types#subagentoutputschema--subagentoutput) for the full shape.
+
+---
+
+## `asTool(execute, step)`
+
+```typescript
+asTool(execute: Autonomous.ConvoExecuteFn, step: StepFn): Autonomous.Tool
+```
+
+Wraps this specialist as an `Autonomous.Tool` the orchestrator can include in its `tools` array. This is the primary way you use `SubAgent`.
+
+### Parameters
+
+<ParamField path="execute" type="Autonomous.ConvoExecuteFn" required>
+  The conversation's `execute` function. Passed through to `run()` when the
+  orchestrator's AI invokes this tool.
+</ParamField>
+
+<ParamField path="step" type="StepFn" required>
+  The step callback from the conversation handler. Passed through to `run()`
+  for UI trace emission.
+</ParamField>
+
+### Returns
+
+An `Autonomous.Tool` with the following properties:
+
+<ResponseField name="name" type="string">
+  `{name}_agent` — e.g., `"hr_agent"` for a specialist created with
+  `name: "hr"`.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  The specialist's `config.description`, verbatim.
+</ResponseField>
+
+<ResponseField name="input" type="SubAgentInputSchema">
+  Zod schema `{ task: string; context?: Record<string, any> }`. All
+  specialists share the same input schema so the orchestrator treats them
+  uniformly.
+</ResponseField>
+
+<ResponseField name="output" type="SubAgentOutputSchema">
+  Zod schema `{ success, result, data?, needsInput?, questions? }`. All
+  specialists share the same output schema.
+</ResponseField>
+
+### The dependency injection pattern
+
+Specialists are defined as standalone module-level constants in `src/agents/`. They have no reference to any conversation context at definition time. `execute` and `step` come from the conversation handler and are only available at runtime, inside the message handler function.
+
+`asTool(execute, step)` is the injection point: it closes over the live `execute` and `step` from the current conversation and returns a fully wired tool the orchestrator can call. This decoupling means the same `hrAgent` module can be used in any conversation without modification.
+
+### Usage example
+
+```typescript
+// src/agents/hr.ts — specialist defined at module level
+export const hrAgent = new SubAgent({
+  name: "hr",
+  description: `Delegate HR-related tasks to the HR specialist.
+Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.`,
+  instructions: `You are an HR specialist.
+
+## Capabilities
+- Book vacation (requires: employeeId, startDate, endDate)
+- Check vacation balance (requires: employeeId)
+- Get benefits info (requires: employeeId)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+\`\`\`
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your employee ID?', 'What dates would you like off?'] }
+\`\`\`
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+\`\`\`
+const result = await bookVacation({ employeeId, startDate, endDate })
+return { action: 'done', success: true, result: 'Vacation booked', data: result }
+\`\`\``,
+  tools: [bookVacation, checkVacationBalance, getBenefits],
+});
+
+// In the orchestrator conversation handler — execute and step are live here
+await execute({
+  instructions: "You are a helpful assistant...",
+  tools: [
+    hrAgent.asTool(execute, step),
+    itAgent.asTool(execute, step),
+    escalateToHuman,
+  ],
+});
+```
+
+<Note>
+  Always call `asTool(execute, step)` inside the conversation handler, not at
+  module level. The `execute` function is bound to the current conversation
+  context and must not be captured at import time.
+</Note>

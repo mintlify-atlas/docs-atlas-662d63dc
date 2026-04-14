@@ -1,0 +1,130 @@
+---
+title: "Docs agent: Botpress documentation answers via RAG"
+description: "The Docs specialist answers Botpress and ADK questions via a RAG knowledge base. It uses no custom tools — the ADK injects search_knowledge automatically."
+---
+
+The Docs agent is the only specialist in Multiagente that carries no custom tools. Instead, it is backed by a RAG (retrieval-augmented generation) knowledge base built from the live Botpress documentation sitemap. When a user asks how a Botpress feature works, how to use the ADK, how to configure an integration, or any other question about the Botpress platform, the orchestrator delegates the request to this agent. The Docs agent searches the knowledge base and synthesizes an accurate, formatted answer directly from the official documentation.
+
+## Delegation description
+
+The orchestrator's AI reads the following description to decide when to route a request to the Docs agent:
+
+```
+Delegate documentation questions to the docs specialist.
+Use for: Botpress documentation questions, how to use Botpress features, ADK questions,
+SDK questions, integration questions.
+```
+
+## SubAgent definition
+
+```typescript
+export const docsAgent = new SubAgent({
+  name: "docs",
+  description: `Delegate documentation questions to the docs specialist.
+Use for: Botpress documentation questions, how to use Botpress features, ADK questions, SDK questions, integration questions.`,
+  instructions: `You are a documentation specialist for Botpress.
+...`,
+  knowledge: [WebsiteKB],
+});
+```
+
+<Info>Notice there is no `tools` array — the agent is defined with a `knowledge` array instead. This is what distinguishes the Docs agent from all other specialists.</Info>
+
+## How the Docs agent differs from other agents
+
+Every other specialist (HR, IT, Sales, Finance) uses the `tools` array to give the AI a set of explicitly defined, schema-validated functions to call. The Docs agent uses the `knowledge` array instead.
+
+When you pass a knowledge source to `execute()` via the `knowledge` array, the Botpress ADK automatically injects a built-in `search_knowledge` tool into the agent's context. The AI calls this tool to query the knowledge base — no custom tool definition is required.
+
+| | Tool-based agents | Docs agent |
+|---|---|---|
+| Data source | Custom `Tool` instances | `Knowledge` instance (RAG KB) |
+| AI-callable function | Explicitly defined | Auto-generated `search_knowledge` |
+| Schema validation | Zod input/output schemas | None (free-text search) |
+| `needsInput` pattern | Yes | No — KB answers open-ended questions |
+
+## Knowledge source: `WebsiteKB`
+
+The knowledge base is defined in `src/knowledge/botpress-docs.ts` and crawls the official Botpress documentation.
+
+```typescript
+import { DataSource, Knowledge } from "@botpress/runtime";
+
+/**
+ * Crawls Botpress documentation from the sitemap.
+ * Content is synced at dev/deploy time and can be refreshed at runtime
+ * via KB.refresh(). The filter excludes the bulk LLM export file.
+ */
+const WebsiteSource = DataSource.Website.fromSitemap(
+  "https://www.botpress.com/docs/sitemap.xml",
+  {
+    filter: ({ url }) => !url.includes("llms-full.txt"),
+  }
+);
+
+/**
+ * When passed to execute() via the knowledge array, the AI gets an
+ * auto-generated search_knowledge tool that queries this KB. The docs
+ * agent uses this as its only data source — no custom tools needed.
+ */
+export const WebsiteKB = new Knowledge({
+  name: "Botpress",
+  description: "Knowledge base containing Botpress documentation.",
+  sources: [WebsiteSource],
+});
+```
+
+<CardGroup cols={2}>
+  <Card title="Sitemap source" icon="sitemap">
+    Crawls `https://www.botpress.com/docs/sitemap.xml` to discover and index all documentation pages automatically.
+  </Card>
+  <Card title="Filter" icon="filter">
+    Excludes URLs containing `llms-full.txt` to skip the bulk LLM export and keep the KB focused on individual doc pages.
+  </Card>
+  <Card title="Sync timing" icon="rotate">
+    Content is indexed at `adk dev` or `adk deploy` time. Call `KB.refresh()` at runtime to re-index updated pages.
+  </Card>
+  <Card title="Auto tool" icon="wand-magic-sparkles">
+    The ADK injects a `search_knowledge` tool automatically when `WebsiteKB` is in the `knowledge` array — no extra code required.
+  </Card>
+</CardGroup>
+
+## Example interaction
+
+A user sends:
+
+> "How do I create a custom tool in the Botpress ADK?"
+
+The orchestrator identifies this as a documentation question and delegates it to the Docs agent. The agent calls the auto-generated `search_knowledge` tool against `WebsiteKB`, retrieves the relevant documentation sections, synthesizes the answer, and returns it to the orchestrator.
+
+No follow-up questions are needed — the agent answers open-ended questions directly from the knowledge base.
+
+<Tip>The Docs agent formats its answers in Markdown with subheadings and code blocks, following the instructions in its system prompt. The orchestrator passes this formatted text directly to the user.</Tip>
+
+## Agent instructions
+
+The Docs agent's AI runs under the following system prompt when executing in worker mode.
+
+<Accordion title="Full system prompt">
+
+```
+You are a documentation specialist for Botpress.
+
+## Your Role
+Answer questions about Botpress by searching the official documentation.
+
+## Guidelines
+- Give concise, accurate answers
+- Use markdown with subheadings to format answers
+- Use code blocks for code examples
+- Don't use emojis or inline citations
+
+## When answering
+1. Search the knowledge base for relevant documentation
+2. Synthesize the information into a clear answer
+3. Include code examples when helpful
+```
+
+</Accordion>
+
+<Note>The Docs agent has no `needsInput` flow because documentation questions are open-ended. The agent searches the knowledge base and synthesizes the best available answer regardless of how specific or broad the question is.</Note>

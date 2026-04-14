@@ -1,0 +1,174 @@
+---
+title: "Orchestrator: message routing and conversation control"
+description: "How the main conversation handler in src/conversations/index.ts routes messages to specialists, invokes them as tools, and manages HITL state across turns."
+---
+
+The orchestrator is the single conversation handler that every user message passes through. It lives in `src/conversations/index.ts` and is responsible for three things: deciding what to do with each message, delegating domain tasks to specialists as tools, and managing the HITL state that pauses AI processing when a human takes over. You never need to touch this file to add a new specialist — the only change required is registering its `asTool()` call in the `tools` array.
+
+## The execute() call
+
+The orchestrator runs a single `execute()` call with a routing `instructions` block and all specialists registered as tools.
+
+```typescript
+await execute({
+  instructions: `You are an orchestrator that routes user requests to specialist agents.
+
+## WHEN TO ESCALATE TO HUMAN (HITL PROTOCOL)
+You must ALWAYS prioritize user satisfaction and safety. Delegate immediately to the 'escalateToHuman' tool IF:
+- The user explicitly asks to speak to a human, real person, agent, or support.
+- The user shows signs of extreme frustration, anger, or urgency.
+- A specialist agent fails repeatedly or returns a technical error you cannot solve.
+Do not argue with the user, just use the escalation tool.
+
+After calling 'escalateToHuman', stop delegating and return its messageToUser to the user.
+
+## WHEN TO DELEGATE
+Delegate to a specialist ONLY when the user has a specific task or question in their domain:
+- **hr_agent**: vacation booking, leave balance, benefits, HR policies
+- **it_agent**: password resets, system status, support tickets, IT policies
+- **sales_agent**: promotions, products, quotes, orders
+- **finance_agent**: expense reports, budgets, reimbursements
+- **docs_agent**: Question about the botpress platform
+
+## WHEN NOT TO DELEGATE
+Handle these yourself - do NOT delegate:
+- Greetings ("hey", "hi", "hello") - respond with a friendly greeting AND briefly mention what you can help with
+- General questions ("what can you help with?")
+- Clarifying what the user needs
+- Chitchat or off-topic conversation
+
+## RULES
+1. For domain tasks → delegate immediately, let specialist determine what info they need
+2. If specialist returns needsInput=true → ask user the specialist's questions
+3. Present specialist results naturally
+4. Stay invisible - don't mention "agents" or "delegating"
+`,
+  tools: [
+    escalateToHuman,
+    hrAgent.asTool(execute, step),
+    itAgent.asTool(execute, step),
+    salesAgent.asTool(execute, step),
+    financeAgent.asTool(execute, step),
+    docsAgent.asTool(execute, step),
+  ],
+  hooks: {
+    onAfterTool: async ({ tool, output }) => { /* ... */ },
+  },
+});
+```
+
+<Note>
+  The orchestrator's AI reads each specialist's `description` field to decide when to delegate. It never sees the specialist's `instructions` or tools — those are scoped to the specialist's isolated `execute()` loop.
+</Note>
+
+## Channels supported
+
+The orchestrator listens on two channels, declared at the top of the `Conversation` definition:
+
+```typescript
+export default new Conversation({
+  channel: ["chat.channel", "webchat.channel"],
+  // ...
+});
+```
+
+Both channels receive the same handler. The `channel` value is available inside the handler and is used by the `step()` debug helper to decide how to emit progress messages.
+
+## HITL state schema
+
+The orchestrator declares three fields in its state schema to track HITL mode:
+
+```typescript
+state: z.object({
+  hitlActive: z.boolean().default(false),
+  hitlActivatedAt: z.number().optional(),
+  hitlMessageToUser: z.string().optional(),
+}),
+```
+
+| Field | Type | Purpose |
+|---|---|---|
+| `hitlActive` | `boolean` | When `true`, every incoming message is blocked before the AI runs. |
+| `hitlActivatedAt` | `number` (Unix ms) | Timestamp of when escalation occurred — useful for SLA tracking. |
+| `hitlMessageToUser` | `string` | The message the `escalateToHuman` tool returned, stored so it can be surfaced in the UI. |
+
+When `hitlActive` is `true`, the handler returns immediately after checking for a resume keyword — the `execute()` call is never reached.
+
+## HITL resume keywords
+
+Users can return control to the bot by sending any message that matches the `HITL_RESUME_KEYWORDS` set:
+
+```typescript
+const HITL_RESUME_KEYWORDS = new Set(["resume bot", "volver al bot"]);
+```
+
+The incoming text is normalized before comparison — trimmed, lowercased, and whitespace-collapsed — so `"  Resume Bot  "` and `"resume bot"` are treated identically.
+
+When a matching keyword arrives while `hitlActive` is `true`, the handler clears all three state fields and sends a confirmation message:
+
+```typescript
+await conversation.send({
+  type: "text",
+  payload: { text: "Listo, retomamos con el bot. Como te puedo ayudar?" },
+});
+```
+
+## The onAfterTool hook
+
+The `onAfterTool` hook fires synchronously after any tool completes inside the orchestrator's `execute()` loop. The handler checks whether the tool that just ran was `escalateToHuman`, and if so, transitions the conversation into HITL mode:
+
+```typescript
+hooks: {
+  onAfterTool: async ({ tool, output }) => {
+    if (tool.name !== "escalateToHuman") {
+      return;
+    }
+
+    state.hitlActive = true;
+    state.hitlActivatedAt = Date.now();
+    state.hitlMessageToUser =
+      typeof output === "object" && output !== null && "messageToUser" in output
+        ? String((output as { messageToUser?: unknown }).messageToUser ?? "")
+        : "";
+
+    step("🚨 HITL escalado a soporte humano", {
+      executionId: `hitl-${Date.now()}`,
+      agent: "system",
+      task: /* messageToUser or "escalateToHuman" */,
+      type: "tool",
+    });
+  },
+},
+```
+
+<Info>
+  The `onAfterTool` hook runs before `execute()` resolves, so state is written before the next message can arrive. This prevents a race condition where a second message could slip through before HITL mode is active.
+</Info>
+
+## The step() debug helper
+
+`step()` streams real-time progress messages to the user as the orchestrator and its specialists work. It is controlled by the `DEBUG_STEPS` flag at the top of the file:
+
+```typescript
+const DEBUG_STEPS = true;
+
+const step = (msg: string, data: StepData) => {
+  if (!DEBUG_STEPS) return;
+
+  if (channel === "chat.channel") {
+    conversation.send({ type: "text", payload: { text: `[>] ${msg}` } });
+    return;
+  }
+
+  if (channel === "webchat.channel") {
+    conversation.send({ type: "text", payload: { text: `[>] ${msg}` } });
+    return;
+  }
+};
+```
+
+The `step` function is passed into each `asTool(execute, step)` call, so specialist progress messages — thinking traces, tool calls, start/end events — all flow back through the same channel. Each step message carries a `StepData` payload with `executionId`, `agent`, `task`, and `type` so the frontend can group them into a single execution card.
+
+<Tip>
+  Set `DEBUG_STEPS = false` in production to suppress progress messages. The `step()` calls in subagents are no-ops when the function body returns early.
+</Tip>

@@ -1,0 +1,156 @@
+---
+title: "Resuming automated bot control after a human handoff"
+description: "Understand how users return conversation control to the bot, which keywords trigger the resume flow, and what state gets cleared when HITL ends."
+---
+
+When a human agent finishes helping a user, control does not automatically return to the bot. The user (or the human agent acting on the user's behalf) must send a specific resume keyword to signal that the conversation should go back to automated handling. Multiagente then clears the HITL state and confirms the transition with a friendly message.
+
+## Resume keywords
+
+The set of supported resume keywords is defined as a constant at the top of `src/conversations/index.ts`:
+
+```typescript
+const HITL_RESUME_KEYWORDS = new Set(["resume bot", "volver al bot"]);
+```
+
+Two keywords are supported out of the box:
+
+| Keyword        | Language |
+| -------------- | -------- |
+| `resume bot`   | English  |
+| `volver al bot`| Spanish  |
+
+Both keywords match case-insensitively and are tolerant of extra whitespace — see [Input normalization](#input-normalization) below.
+
+## How resume works
+
+When the conversation handler receives a message while `hitlActive` is `true`, it checks whether the normalized input matches a resume keyword before ignoring the message:
+
+```typescript
+const incomingText = normalizeInput(getIncomingText(message));
+const wantsResume = HITL_RESUME_KEYWORDS.has(incomingText);
+
+if (state.hitlActive) {
+  if (wantsResume) {
+    state.hitlActive = false;
+    state.hitlActivatedAt = undefined;
+    state.hitlMessageToUser = undefined;
+
+    if (channel === "chat.channel" || channel === "webchat.channel") {
+      await (conversation.send as (message: { type: "text"; payload: { text: string } }) => Promise<unknown>)({
+        type: "text",
+        payload: { text: "Listo, retomamos con el bot. Como te puedo ayudar?" },
+      });
+    }
+    return;
+  }
+
+  console.log("Mensaje ignorado por la IA. Un humano está al mando de esta conversación.");
+  return;
+}
+```
+
+If the keyword matches, state is cleared and a confirmation message is sent. The `return` statement ends handler execution, which means the orchestrator does not run on this turn — the next message the user sends will be the first one handled by the bot again.
+
+## State cleanup
+
+When a resume keyword is received, all three HITL state fields are reset:
+
+```typescript
+state.hitlActive = false;
+state.hitlActivatedAt = undefined;
+state.hitlMessageToUser = undefined;
+```
+
+| Field               | Value after resume |
+| ------------------- | ------------------ |
+| `hitlActive`        | `false`            |
+| `hitlActivatedAt`   | `undefined`        |
+| `hitlMessageToUser` | `undefined`        |
+
+Clearing `hitlActivatedAt` and `hitlMessageToUser` ensures stale handoff data does not persist into the next session segment.
+
+## Confirmation message
+
+After clearing state, the bot sends a confirmation message to the user on both the `chat.channel` and `webchat.channel` channels:
+
+```typescript
+await (conversation.send as (message: { type: "text"; payload: { text: string } }) => Promise<unknown>)({
+  type: "text",
+  payload: { text: "Listo, retomamos con el bot. Como te puedo ayudar?" },
+});
+```
+
+The confirmation text is: **"Listo, retomamos con el bot. Como te puedo ayudar?"**
+
+This message signals to the user that the bot is active again and prompts them to continue with their request.
+
+## Input normalization
+
+Before checking against `HITL_RESUME_KEYWORDS`, every incoming message passes through `normalizeInput`:
+
+```typescript
+const normalizeInput = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, " ");
+```
+
+The function applies three transformations:
+
+1. **Trim** — removes leading and trailing whitespace.
+2. **Lowercase** — converts the string to lowercase.
+3. **Collapse whitespace** — replaces sequences of multiple spaces (or tabs) with a single space.
+
+This means a user sending `RESUME BOT`, `  Resume Bot  `, or `resume  bot` will all match the keyword `"resume bot"` correctly.
+
+<Tip>
+Because normalization is applied before the keyword check, you never need to add uppercase variants to `HITL_RESUME_KEYWORDS`. Adding `"resume bot"` is sufficient to match any capitalization.
+</Tip>
+
+## Adding custom resume keywords
+
+You can extend `HITL_RESUME_KEYWORDS` with additional phrases to support other languages or workflows. Add new entries directly to the `Set`:
+
+```typescript
+const HITL_RESUME_KEYWORDS = new Set([
+  "resume bot",
+  "volver al bot",
+  "back to bot",       // additional English variant
+  "reprendre le bot",  // French
+  "bot wieder",        // German
+]);
+```
+
+Keep keywords short and unambiguous so they are unlikely to appear in normal conversation text. Avoid single-word keywords that users might type naturally.
+
+## Flow diagram
+
+The complete resume flow runs in this order:
+
+<Steps>
+  <Step title="User sends a message">
+    The user (or human agent) types a resume keyword into the chat, for example `resume bot`.
+  </Step>
+  <Step title="Normalize input">
+    `normalizeInput()` trims, lowercases, and collapses whitespace: `" Resume Bot "` becomes `"resume bot"`.
+  </Step>
+  <Step title="Check against the Set">
+    `HITL_RESUME_KEYWORDS.has(incomingText)` returns `true`. The resume branch executes.
+  </Step>
+  <Step title="Clear HITL state">
+    `hitlActive` is set to `false`, and `hitlActivatedAt` and `hitlMessageToUser` are set to `undefined`.
+  </Step>
+  <Step title="Send confirmation">
+    The bot sends `"Listo, retomamos con el bot. Como te puedo ayudar?"` to the user.
+  </Step>
+  <Step title="Resume normal flow">
+    The handler returns. The next message from the user enters the normal orchestration pipeline — HITL is fully deactivated.
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="HITL overview" icon="circle-pause" href="/hitl/overview">
+    Learn how escalation is triggered and how state is saved during a human handoff.
+  </Card>
+  <Card title="Orchestrator" icon="network-wired" href="/architecture/orchestrator">
+    Understand the full orchestration logic that resumes after HITL ends.
+  </Card>
+</CardGroup>

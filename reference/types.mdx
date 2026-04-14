@@ -1,0 +1,246 @@
+---
+title: "TypeScript types and Zod schemas — subagent reference"
+description: "Reference for SubAgentConfig, SubAgentInput, SubAgentOutput, StepData, StepFn, and SubAgentExit — all exported from src/subagent/."
+---
+
+All TypeScript types and Zod schemas used by the SubAgent framework are defined in `src/subagent/types.ts` and re-exported from `src/subagent/index.ts`. The Zod schemas (`SubAgentInputSchema`, `SubAgentOutputSchema`) define the runtime-validated I/O contract for every specialist tool. The TypeScript types (`SubAgentConfig`, `SubAgentInput`, `SubAgentOutput`, `StepData`, `StepFn`) provide static type safety throughout the orchestrator. `SubAgentExit` is the single exit point all specialists share.
+
+---
+
+## `SubAgentConfig`
+
+The configuration object passed to `new SubAgent(config)`. Defines the specialist's identity, behavior, and capabilities.
+
+```typescript
+export type SubAgentConfig = {
+  /** Unique identifier — becomes the tool name as `{name}_agent` in the orchestrator */
+  name: string;
+
+  /** Description of what this subagent does — the orchestrator's AI reads this to decide when to invoke */
+  description: string;
+
+  /** System prompt / instructions for the subagent's isolated execute() loop */
+  instructions: string;
+
+  /** Tools available to this subagent — scoped to this agent only, not shared with the orchestrator */
+  tools?: Autonomous.Tool[];
+
+  /** Knowledge sources available to this subagent */
+  knowledge?: Knowledge[];
+
+  /** Maximum iterations before forcing exit (default: 10) */
+  maxIterations?: number;
+};
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | Yes | Unique identifier. Becomes `{name}_agent` as the tool name in the orchestrator. |
+| `description` | `string` | Yes | What the orchestrator's AI reads to decide when to delegate to this specialist. |
+| `instructions` | `string` | Yes | System prompt for the specialist's isolated `execute()` loop. |
+| `tools` | `Autonomous.Tool[]` | No | Tools scoped to this specialist only. Not visible to the orchestrator. |
+| `knowledge` | `Knowledge[]` | No | RAG knowledge sources for this specialist's `execute()` call. |
+| `maxIterations` | `number` | No | Max iterations before forcing an exit. Defaults to `10` if omitted. |
+
+---
+
+## `SubAgentInputSchema` / `SubAgentInput`
+
+The Zod schema and inferred TypeScript type for invoking a specialist. The orchestrator's AI fills these fields when it calls the specialist tool.
+
+```typescript
+export const SubAgentInputSchema = z.object({
+  task: z.string().describe("The task to delegate to this subagent"),
+  context: z.record(z.any()).optional().describe("Additional context to pass to the subagent"),
+});
+
+export type SubAgentInput = z.infer<typeof SubAgentInputSchema>;
+```
+
+<ParamField path="task" type="string" required>
+  The natural language task to delegate. Injected into the specialist's
+  instructions under `## Your Task`.
+</ParamField>
+
+<ParamField path="context" type="Record<string, any>">
+  Optional structured data from prior interactions — e.g., an employee ID
+  the user already provided. Serialized as `key: value` pairs under
+  `## Context` in the specialist's instructions, so the worker AI can read
+  it without needing to ask the user again.
+</ParamField>
+
+---
+
+## `SubAgentOutputSchema` / `SubAgentOutput`
+
+The Zod schema and inferred TypeScript type returned by all specialists via `SubAgentExit`. Every specialist, regardless of domain, returns this same shape so the orchestrator can handle results uniformly.
+
+```typescript
+export const SubAgentOutputSchema = z.object({
+  success: z.boolean().describe("Whether the task was completed successfully"),
+  result: z.string().describe("Summary of what was accomplished or found"),
+  data: z.any().optional().describe("Structured data returned by the subagent"),
+  needsInput: z.boolean().optional().describe("Whether more information is needed from the user"),
+  questions: z.array(z.string()).optional().describe("Questions to ask the user if more info needed"),
+});
+
+export type SubAgentOutput = z.infer<typeof SubAgentOutputSchema>;
+```
+
+<ResponseField name="success" type="boolean">
+  `true` if the task was completed, `false` if it failed or could not be
+  completed with the available information.
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  Plain-language summary of what was accomplished, found, or why the task
+  could not be completed. The orchestrator uses this to compose its reply to
+  the user.
+</ResponseField>
+
+<ResponseField name="data" type="any">
+  Optional structured data from tool calls — e.g., a confirmation number,
+  vacation balance, or expense report. The orchestrator can reference this
+  when synthesizing its reply.
+</ResponseField>
+
+<ResponseField name="needsInput" type="boolean">
+  When `true`, the specialist could not complete the task because required
+  information is missing. The orchestrator relays `questions` to the user
+  and calls the specialist again with the answers in `context`.
+</ResponseField>
+
+<ResponseField name="questions" type="string[]">
+  Questions to ask the user when `needsInput` is `true`. The orchestrator
+  relays these verbatim or synthesizes them into a single prompt.
+</ResponseField>
+
+<Note>
+  The `needsInput` flow is the key multi-turn pattern in Multiagente.
+  Specialists run in worker mode and cannot talk to the user directly. When
+  they need more information, they set `needsInput: true` and provide
+  `questions`. The orchestrator then collects answers from the user and
+  re-invokes the specialist with the answers in `context`.
+</Note>
+
+---
+
+## `StepData`
+
+The payload attached to each custom message emitted during a specialist's execution. The frontend groups these messages by `executionId` to render the `SubAgentCard` UI component.
+
+```typescript
+export type StepData = {
+  type: "start" | "thinking" | "tool" | "end";
+  executionId: string;   // Groups all steps from one subagent invocation
+  agent: string;
+  task: string;
+  stepCount?: number;    // Only on "end" — total steps taken
+  // Note: the conversation handler adds `ts: Date.now()` when sending the
+  // custom message. The frontend StepData type includes ts for sorting,
+  // but it's not part of this type since it's added at the transport layer.
+};
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `"start" \| "thinking" \| "tool" \| "end"` | Lifecycle stage of this step message. |
+| `executionId` | `string` | Unique ID for one `run()` invocation. Generated as `exec-{timestamp}-{random}`. Groups all steps from the same invocation in the UI. |
+| `agent` | `string` | The specialist's `name` (e.g., `"hr"`). |
+| `task` | `string` | The task string passed to `run()`. |
+| `stepCount` | `number` | Present only on `"end"` steps — total number of thinking/tool steps taken during this invocation. |
+
+### Step lifecycle
+
+```
+start → thinking (0..n) → tool (0..n) → end
+```
+
+- `"start"` — emitted before `execute()` is called
+- `"thinking"` — emitted for each `"comment"` or `"think_signal"` trace
+- `"tool"` — emitted for each `"tool_call"` trace, with the tool name and truncated I/O
+- `"end"` — emitted after `execute()` returns, with the final success/failure icon and `stepCount`
+
+---
+
+## `StepFn`
+
+The callback type the orchestrator injects into `run()` and `asTool()` to emit UI updates during specialist execution.
+
+```typescript
+export type StepFn = (msg: string, data: StepData) => void;
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `msg` | `string` | Human-readable message string with an emoji prefix (e.g., `"⏳ HR → \"Book my vacation...\""`). In webchat, this is the text of a custom message. In the CLI (`chat` channel), it is sent as a plain text message. |
+| `data` | `StepData` | Structured metadata for the frontend to render the `SubAgentCard`. |
+
+---
+
+## `SubAgentExit`
+
+The single exit point all specialists use to return results from their `execute()` loop. Defined as a shared constant so the `SubAgent` framework remains generic across all domain specialists.
+
+```typescript
+export const SubAgentExit = new Autonomous.Exit({
+  name: "done",
+  description: "Use this when you have completed the task or need to return results to the orchestrator",
+  schema: SubAgentOutputSchema,
+});
+```
+
+`Autonomous.Exit` defines a named exit point for an `execute()` loop. When the specialist AI calls this exit, `execute()` resolves and the caller can extract the typed output.
+
+### Checking the exit in `run()`
+
+```typescript
+const result = await execute({
+  mode: "worker",
+  instructions: "...",
+  exits: [SubAgentExit],
+  // ...
+});
+
+if (result.is(SubAgentExit)) {
+  // result.output is typed as SubAgentOutput
+  return result.output;
+} else {
+  // Iteration limit hit — return fallback
+  return {
+    success: false,
+    result: "The subagent could not complete the task within the iteration limit",
+    needsInput: true,
+    questions: ["Could you provide more details about what you need?"],
+  };
+}
+```
+
+<Info>
+  Using one shared `SubAgentExit` instead of per-specialist exits keeps the
+  `SubAgent` class generic. Any specialist can be created without defining a
+  custom exit — only `SubAgentOutputSchema` needs to match, and it always
+  does because the schema is baked into the exit definition.
+</Info>
+
+---
+
+## Module exports
+
+All types and schemas are re-exported from `src/subagent/index.ts`:
+
+```typescript
+export { SubAgent } from "./subagent";
+export {
+  SubAgentInputSchema,
+  SubAgentOutputSchema,
+  SubAgentExit,
+  type SubAgentConfig,
+  type SubAgentInput,
+  type SubAgentOutput,
+  type StepFn,
+  type StepData,
+} from "./types";
+```
+
+Import from `../subagent` in agent files, or from `@/subagent` if you configure path aliases in `tsconfig.json`.

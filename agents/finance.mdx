@@ -1,0 +1,126 @@
+---
+title: "Finance agent: expense reports and reimbursement queries"
+description: "The Finance specialist retrieves expense reports and handles reimbursement queries. The orchestrator delegates all finance-related requests to this agent."
+---
+
+The Finance agent is a domain specialist that handles expense reporting and financial queries in the Multiagente system. When a user asks about their expense report for a specific month, submits a reimbursement question, or makes a budget inquiry, the orchestrator delegates the request to this agent. The Finance agent runs in isolated worker mode with a single tool that retrieves itemized expense data from your finance system.
+
+## Delegation description
+
+The orchestrator's AI reads the following description to decide when to route a request to the Finance agent:
+
+```
+Delegate finance tasks to the Finance specialist.
+Use for: expense reports, budget inquiries, reimbursements.
+```
+
+## SubAgent definition
+
+```typescript
+export const financeAgent = new SubAgent({
+  name: "finance",
+  description: `Delegate finance tasks to the Finance specialist.
+Use for: expense reports, budget inquiries, reimbursements.`,
+  instructions: `You are a Finance specialist.
+...`,
+  tools: [getExpenseReport],
+});
+```
+
+## Available tools
+
+<CardGroup cols={2}>
+  <Card title="getExpenseReport" icon="receipt">
+    Retrieves an itemized expense report for a specific employee and month, including the total amount.
+  </Card>
+</CardGroup>
+
+### getExpenseReport
+
+Retrieves an employee's expense report for a given month.
+
+**Input**
+
+<ParamField path="body.employeeId" type="string" required>
+  The employee ID whose expenses to retrieve.
+</ParamField>
+
+<ParamField path="body.month" type="string" required>
+  The month to retrieve expenses for, in `YYYY-MM` format (e.g. `2024-11`).
+</ParamField>
+
+**Output**
+
+<ResponseField name="total" type="number" required>
+  Total expense amount for the month in USD.
+</ResponseField>
+
+<ResponseField name="items" type="object[]" required>
+  Itemized list of expense entries.
+  <Expandable title="properties">
+    <ResponseField name="description" type="string" required>
+      Description of the expense item.
+    </ResponseField>
+    <ResponseField name="amount" type="number" required>
+      Amount of this expense item in USD.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example interaction
+
+A user sends:
+
+> "Can I see my expense report for October?"
+
+The orchestrator identifies this as a Finance task and delegates it. Both `employeeId` and `month` are required, so the Finance agent returns `needsInput: true`:
+
+> "What is your employee ID, and which month would you like the report for (YYYY-MM)?"
+
+After the user provides both values, the orchestrator re-delegates. The agent calls `getExpenseReport` and returns the total and itemized expenses for the requested month.
+
+<Info>The `month` field must be in `YYYY-MM` format. If the user says "October", the agent will ask them to confirm the year so the correct format can be constructed.</Info>
+
+## Agent instructions
+
+The Finance agent's AI runs under the following system prompt when executing in worker mode.
+
+<Accordion title="Full system prompt">
+
+```
+You are a Finance specialist.
+
+## Capabilities
+- Get expense reports (requires: employeeId, month)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your employee ID?', 'Which month (YYYY-MM)?'] }
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+
+const result = await getExpenseReport({ employeeId, month })
+return { action: 'done', success: true, result: 'Report retrieved', data: result }
+```
+
+</Accordion>
+
+## `needsInput` flow
+
+The Finance agent always requires both `employeeId` and `month` before it can call `getExpenseReport`. When either is missing, it returns this pattern immediately:
+
+```typescript
+return {
+  action: 'done',
+  success: false,
+  needsInput: true,
+  result: 'Need more information',
+  questions: ['What is your employee ID?', 'Which month (YYYY-MM)?']
+}
+```
+
+The orchestrator receives the questions, relays them to the user, and re-delegates once both inputs are available.
+
+<Note>The Finance agent currently exposes one tool. Budget inquiries and reimbursement questions that require additional data sources can be addressed by adding new tools to the `financeAgent` definition in `src/agents/finance.ts`.</Note>

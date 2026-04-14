@@ -1,0 +1,478 @@
+---
+title: "Built-in tools reference for all specialist agents"
+description: "Reference for the escalateToHuman orchestrator tool and all specialist agent tools — input/output schemas, descriptions, and source definitions."
+---
+
+Multiagente uses two categories of tools. The first is `escalateToHuman`, an orchestrator-level tool available directly to the top-level AI — it pauses bot orchestration and hands the conversation to a human support agent. The second category is specialist tools: domain-specific functions scoped exclusively to each specialist agent (HR, IT, Sales, Finance) and never exposed to the orchestrator directly. Both categories follow the same `Autonomous.Tool` interface from `@botpress/runtime`, with Zod-typed input and output schemas.
+
+---
+
+## `escalateToHuman`
+
+Defined in `src/tools/escalateTool.ts`. This tool is passed directly to the orchestrator's `execute()` call alongside the specialist `asTool()` wrappers. When invoked, it logs an HITL alert and returns a status message to relay to the user.
+
+```typescript
+import { Autonomous, z } from "@botpress/runtime";
+
+export default new Autonomous.Tool({
+  name: "escalateToHuman",
+  description:
+    "ÚSALA OBLIGATORIAMENTE cuando el usuario pida hablar con un humano, esté enfadado, o si los subagentes fallan repetidamente. Esta herramienta pausa la IA y avisa al equipo de soporte humano.",
+  input: z.object({
+    reason: z
+      .string()
+      .describe("La razón exacta por la que se escala al humano (ej: 'El usuario está frustrado' o 'Fallo técnico en subagente')"),
+    summary: z.string().describe("Un resumen estructurado del problema del cliente para que el humano tenga contexto."),
+  }),
+  output: z.object({
+    status: z.string(),
+    messageToUser: z.string(),
+  }),
+  handler: async ({ reason, summary }) => {
+    console.log("\n🚨 --- [ALERTA HITL ACTIVADA] --- 🚨");
+    console.log(`Motivo: ${reason}`);
+    console.log(`Contexto enviado al agente humano: ${summary}`);
+    console.log("------------------------------------\n");
+
+    return {
+      status: "human_notified",
+      messageToUser: "He transferido tu caso a un especialista humano. Por favor, espera un momento en este chat.",
+    };
+  },
+});
+```
+
+### Input
+
+<ParamField path="reason" type="string" required>
+  The exact reason for escalating to a human. The orchestrator's AI must
+  populate this with a specific, descriptive rationale — e.g., `"El usuario
+  está frustrado"` or `"Fallo técnico en subagente"`.
+</ParamField>
+
+<ParamField path="summary" type="string" required>
+  A structured summary of the customer's problem, written for the human
+  support agent who will take over the conversation. Should contain enough
+  context for the agent to continue without asking the user to repeat
+  themselves.
+</ParamField>
+
+### Output
+
+<ResponseField name="status" type="string">
+  Always `"human_notified"`. Signals to the orchestrator that the HITL alert
+  was dispatched.
+</ResponseField>
+
+<ResponseField name="messageToUser" type="string">
+  The message the orchestrator should relay to the user, informing them that
+  a human specialist is taking over.
+</ResponseField>
+
+<Info>
+  The current handler logs the escalation to the console. In production,
+  replace the `console.log` statements with a Slack webhook, Zendesk ticket
+  creation, or your preferred support platform integration.
+</Info>
+
+---
+
+## HR tools
+
+Defined in `src/agents/hr.ts`. Scoped to `hrAgent` only.
+
+### `bookVacation`
+
+Book vacation time for an employee.
+
+**Input**
+
+<ParamField path="employeeId" type="string" required>
+  The employee's ID.
+</ParamField>
+
+<ParamField path="startDate" type="string" required>
+  Vacation start date in `YYYY-MM-DD` format.
+</ParamField>
+
+<ParamField path="endDate" type="string" required>
+  Vacation end date in `YYYY-MM-DD` format.
+</ParamField>
+
+**Output**
+
+<ResponseField name="success" type="boolean">
+  Whether the booking was created successfully.
+</ResponseField>
+
+<ResponseField name="confirmationNumber" type="string">
+  Unique confirmation number for the booking (e.g., `VAC-1718000000000`).
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation message.
+</ResponseField>
+
+---
+
+### `checkVacationBalance`
+
+Check how many vacation days an employee has remaining.
+
+**Input**
+
+<ParamField path="employeeId" type="string" required>
+  The employee's ID.
+</ParamField>
+
+**Output**
+
+<ResponseField name="totalDays" type="number">
+  Total vacation days allocated for the year.
+</ResponseField>
+
+<ResponseField name="usedDays" type="number">
+  Vacation days already used.
+</ResponseField>
+
+<ResponseField name="remainingDays" type="number">
+  Vacation days still available.
+</ResponseField>
+
+---
+
+### `getBenefits`
+
+Retrieve the benefits package for an employee.
+
+**Input**
+
+<ParamField path="employeeId" type="string" required>
+  The employee's ID.
+</ParamField>
+
+**Output**
+
+<ResponseField name="benefits" type="string[]">
+  Array of benefit descriptions (e.g., health insurance, 401(k), PTO).
+</ResponseField>
+
+---
+
+## IT tools
+
+Defined in `src/agents/it.ts`. Scoped to `itAgent` only.
+
+### `resetPassword`
+
+Reset a user's password and generate a temporary one.
+
+**Input**
+
+<ParamField path="userId" type="string" required>
+  The user's ID.
+</ParamField>
+
+**Output**
+
+<ResponseField name="success" type="boolean">
+  Whether the password was reset successfully.
+</ResponseField>
+
+<ResponseField name="temporaryPassword" type="string">
+  The generated temporary password. The user must change it on next login.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation and instructions.
+</ResponseField>
+
+---
+
+### `checkSystemStatus`
+
+Check the operational status of company systems and services.
+
+**Input**
+
+<ParamField path="system" type="string">
+  Optional. Name of a specific system to check. Omit to retrieve the status
+  of all systems.
+</ParamField>
+
+**Output**
+
+<ResponseField name="systems" type="object[]">
+  Array of system status objects.
+
+  <Expandable title="properties">
+    <ResponseField name="name" type="string">
+      System name (e.g., `"Email"`, `"VPN"`, `"HR Portal"`).
+    </ResponseField>
+    <ResponseField name="status" type='"operational" | "degraded" | "outage"'>
+      Current operational status.
+    </ResponseField>
+    <ResponseField name="message" type="string">
+      Optional detail message, present when status is not `"operational"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### `createTicket`
+
+Create an IT support ticket for a reported issue.
+
+**Input**
+
+<ParamField path="title" type="string" required>
+  Brief description of the issue.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  Detailed description of the problem.
+</ParamField>
+
+<ParamField path="priority" type='"low" | "medium" | "high" | "critical"' required>
+  Priority level. Determines estimated response time: `low` → 48h,
+  `medium` → 24h, `high` → 4h, `critical` → 1h.
+</ParamField>
+
+<ParamField path="userId" type="string" required>
+  ID of the user reporting the issue.
+</ParamField>
+
+**Output**
+
+<ResponseField name="ticketId" type="string">
+  Unique ticket identifier (e.g., `IT-1718000000000`).
+</ResponseField>
+
+<ResponseField name="estimatedResponse" type="string">
+  Estimated response time based on priority (e.g., `"4h"`).
+</ResponseField>
+
+---
+
+### `getITPolicies`
+
+Retrieve IT security policies and guidelines.
+
+**Input**
+
+<ParamField path="topic" type="string">
+  Optional. Filter policies by topic (e.g., `"password"`, `"vpn"`). Omit to
+  retrieve all policies.
+</ParamField>
+
+**Output**
+
+<ResponseField name="policies" type="object[]">
+  Array of policy objects.
+
+  <Expandable title="properties">
+    <ResponseField name="name" type="string">
+      Policy name (e.g., `"Password Policy"`).
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      Full policy text.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Sales tools
+
+Defined in `src/agents/sales.ts`. Scoped to `salesAgent` only.
+
+### `getPromotions`
+
+Retrieve currently active sales promotions and discount codes.
+
+**Input**
+
+No input required.
+
+**Output**
+
+<ResponseField name="promotions" type="object[]">
+  Array of active promotion objects.
+
+  <Expandable title="properties">
+    <ResponseField name="name" type="string">
+      Promotion name (e.g., `"Holiday Sale"`).
+    </ResponseField>
+    <ResponseField name="discount" type="string">
+      Discount description (e.g., `"25% off"`).
+    </ResponseField>
+    <ResponseField name="code" type="string">
+      Optional promo code to apply at checkout.
+    </ResponseField>
+    <ResponseField name="validUntil" type="string">
+      Expiry date or `"Ongoing"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### `getProductInfo`
+
+Retrieve pricing and availability for a product.
+
+**Input**
+
+<ParamField path="productId" type="string" required>
+  The product ID or name to look up.
+</ParamField>
+
+**Output**
+
+<ResponseField name="product" type="object">
+  Product details.
+
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      Product identifier.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Product display name.
+    </ResponseField>
+    <ResponseField name="price" type="number">
+      Unit price.
+    </ResponseField>
+    <ResponseField name="inStock" type="boolean">
+      Whether the product is currently in stock.
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      Product description.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### `createQuote`
+
+Generate a sales quote for a customer.
+
+**Input**
+
+<ParamField path="customerName" type="string" required>
+  Full name of the customer.
+</ParamField>
+
+<ParamField path="customerEmail" type="string" required>
+  Customer's email address.
+</ParamField>
+
+<ParamField path="items" type="object[]" required>
+  Line items for the quote.
+
+  <Expandable title="properties">
+    <ResponseField name="productId" type="string">
+      Product identifier.
+    </ResponseField>
+    <ResponseField name="quantity" type="number">
+      Quantity to quote.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="discountCode" type="string">
+  Optional promotional code to apply. Applies a 15% discount when present.
+</ParamField>
+
+**Output**
+
+<ResponseField name="quoteId" type="string">
+  Unique quote identifier (e.g., `QT-1718000000000`).
+</ResponseField>
+
+<ResponseField name="subtotal" type="number">
+  Total before discount.
+</ResponseField>
+
+<ResponseField name="discount" type="number">
+  Discount amount applied (0 if no code provided).
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Final total after discount.
+</ResponseField>
+
+<ResponseField name="validDays" type="number">
+  Number of days the quote is valid (always `30`).
+</ResponseField>
+
+---
+
+### `checkOrderStatus`
+
+Look up the current status of a customer order.
+
+**Input**
+
+<ParamField path="orderId" type="string" required>
+  The order ID to check.
+</ParamField>
+
+**Output**
+
+<ResponseField name="orderId" type="string">
+  The order ID echoed back.
+</ResponseField>
+
+<ResponseField name="status" type='"pending" | "processing" | "shipped" | "delivered"'>
+  Current fulfillment status.
+</ResponseField>
+
+<ResponseField name="estimatedDelivery" type="string">
+  Optional estimated delivery date (`YYYY-MM-DD`), present when the order
+  has shipped.
+</ResponseField>
+
+<ResponseField name="trackingNumber" type="string">
+  Optional tracking number, present when the order has shipped.
+</ResponseField>
+
+---
+
+## Finance tools
+
+Defined in `src/agents/finance.ts`. Scoped to `financeAgent` only.
+
+### `getExpenseReport`
+
+Retrieve an employee's expense report for a given month.
+
+**Input**
+
+<ParamField path="employeeId" type="string" required>
+  The employee's ID.
+</ParamField>
+
+<ParamField path="month" type="string" required>
+  The month to retrieve in `YYYY-MM` format (e.g., `"2024-03"`).
+</ParamField>
+
+**Output**
+
+<ResponseField name="total" type="number">
+  Total expenses for the month.
+</ResponseField>
+
+<ResponseField name="items" type="object[]">
+  Array of individual expense line items.
+
+  <Expandable title="properties">
+    <ResponseField name="description" type="string">
+      Expense description.
+    </ResponseField>
+    <ResponseField name="amount" type="number">
+      Amount for this line item.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

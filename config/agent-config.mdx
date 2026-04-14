@@ -1,0 +1,111 @@
+---
+title: 'Configure your Multiagente agent with agent.config.ts'
+description: 'Configure name, description, defaultModels, bot and user state schemas, and integration dependencies for Multiagente using defineConfig.'
+---
+
+`agent.config.ts` is the single source of truth for your agent's identity and runtime behaviour. It uses `defineConfig` from `@botpress/runtime` to declare the agent name, the LLM models each execution mode uses, the Zod schemas that shape bot-level and user-level state, and the integrations that wire the agent to external channels. Every other file in the project reads from what this file establishes.
+
+## Full source
+
+```typescript agent.config.ts
+import { z, defineConfig } from "@botpress/runtime";
+
+export default defineConfig({
+  name: "subagents",
+  description: "A multi-agent orchestrator-worker pattern example",
+
+  defaultModels: {
+    autonomous: "cerebras:gpt-oss-120b",
+    zai: "cerebras:gpt-oss-120b",
+  },
+
+  bot: {
+    state: z.object({}),
+  },
+
+  user: {
+    state: z.object({}),
+  },
+
+  dependencies: {
+    integrations: {
+      chat: { version: "chat@0.7.3", enabled: true },
+      webchat: { version: "webchat@0.3.0", enabled: true },
+    },
+  },
+});
+```
+
+## Field reference
+
+<ParamField path="name" type="string" required>
+  The internal identifier for the agent. Used by the ADK CLI and Botpress Cloud to reference this deployment. Set to `"subagents"` in this project.
+</ParamField>
+
+<ParamField path="description" type="string">
+  A human-readable summary of what the agent does. Displayed in Botpress Cloud and useful for team documentation. Currently `"A multi-agent orchestrator-worker pattern example"`.
+</ParamField>
+
+<ParamField path="defaultModels.autonomous" type="string">
+  The LLM used during `execute` loops where the agent autonomously decides which tools to call. Multiagente uses `"cerebras:gpt-oss-120b"` for low-latency orchestration decisions.
+</ParamField>
+
+<ParamField path="defaultModels.zai" type="string">
+  The LLM used for zai-powered generation tasks. Also set to `"cerebras:gpt-oss-120b"`. Change this independently of `autonomous` if you want a different model for structured generation.
+</ParamField>
+
+<ParamField path="bot.state" type="object">
+  A Zod schema for state that persists at the bot level — shared across all users and conversations. Currently `z.object({})` because the orchestrator does not store global state here. Extend this schema when you need cross-conversation data.
+</ParamField>
+
+<ParamField path="user.state" type="object">
+  A Zod schema for state that persists per user across all their conversations. Currently `z.object({})`. Add fields here for per-user preferences or memory that should survive across sessions.
+</ParamField>
+
+<ParamField path="dependencies.integrations" type="object">
+  A map of integration name to `{ version, enabled }`. Each entry installs an integration package and makes its channels available to conversations. See the [integrations page](/config/integrations) for details on `chat` and `webchat`.
+</ParamField>
+
+## Changing the default model
+
+Replace the model string with any model ID supported by Botpress Cloud. Both `autonomous` and `zai` can be set independently:
+
+```typescript agent.config.ts
+defaultModels: {
+  autonomous: "openai:gpt-4o",
+  zai: "anthropic:claude-3-5-haiku",
+},
+```
+
+Run `adk build` after editing `agent.config.ts` to regenerate types and validate the configuration before deploying.
+
+## Conversation-level state
+
+The top-level `bot.state` and `user.state` schemas define global and per-user state. Each conversation adds its own state schema via the `state` field in the `Conversation` constructor. For example, the main conversation handler adds HITL fields on top of the base schemas:
+
+```typescript src/conversations/index.ts
+export default new Conversation({
+  channel: ["chat.channel", "webchat.channel"],
+  state: z.object({
+    hitlActive: z.boolean().default(false),
+    hitlActivatedAt: z.number().optional(),
+    hitlMessageToUser: z.string().optional(),
+  }),
+  // ...
+});
+```
+
+This keeps conversation-specific concerns (like HITL state) scoped to the handler that owns them, rather than polluting the global bot or user schemas.
+
+<Note>
+  After any change to `agent.config.ts`, run `adk build` to regenerate the TypeScript types that the rest of the project depends on.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/config/deployment">
+    Build and deploy your agent to Botpress Cloud.
+  </Card>
+  <Card title="Integrations" icon="plug" href="/config/integrations">
+    How the chat and webchat integrations are configured.
+  </Card>
+</CardGroup>

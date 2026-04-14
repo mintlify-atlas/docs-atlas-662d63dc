@@ -1,97 +1,74 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Multiagente: Multi-Agent Orchestrator for Botpress"
+description: "Multiagente is a multi-agent orchestrator built on Botpress ADK. Route conversations to domain specialists and escalate to human support via HITL."
 ---
 
-## Setting up
+Multiagente is a multi-agent orchestration system built with the Botpress ADK (TypeScript). It receives messages via chat and webchat, delegates tasks to domain specialist agents — HR, IT, Sales, Finance, and Docs — and seamlessly escalates to human support when needed through a HITL (human-in-the-loop) flow.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install dependencies, start the dev server, and send your first message in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    Understand the orchestrator-worker pattern and how agents communicate.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Specialist Agents" icon="users" href="/agents/hr">
+    Explore the five built-in domain agents: HR, IT, Sales, Finance, and Docs.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="HITL Escalation" icon="headset" href="/hitl/overview">
+    Learn how conversations escalate to human agents and resume back to the bot.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## How it works
 
-Everything you need to create world-class documentation.
+Multiagente acts as a central orchestrator. Every incoming message passes through a single conversation handler that decides whether to respond directly, delegate to a specialist, or escalate to a human.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Message arrives">
+    A user sends a message via `chat` or `webchat` channel. The orchestrator receives it and checks if HITL mode is active.
+  </Step>
+  <Step title="Route to specialist">
+    The orchestrator AI reads each specialist's description and delegates the task — HR, IT, Sales, Finance, or Docs — by invoking that agent as a tool.
+  </Step>
+  <Step title="Specialist executes in isolation">
+    Each specialist runs in worker mode with its own context window, calls its domain tools, and returns a structured result to the orchestrator.
+  </Step>
+  <Step title="Orchestrator responds">
+    The orchestrator synthesizes the specialist's result into a single, coherent reply sent back to the user.
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Isolated worker agents" icon="box-open">
+    Specialists run in their own `execute()` loop with no access to the conversation transcript, keeping the orchestrator in full control.
+  </Card>
+  <Card title="Human-in-the-loop" icon="person-circle-check">
+    The `escalateToHuman` tool pauses AI orchestration and hands off to a human agent. Resume with `resume bot` or `volver al bot`.
+  </Card>
+  <Card title="RAG knowledge base" icon="database">
+    The Docs agent queries the live Botpress documentation sitemap — no static data, always up to date.
+  </Card>
+  <Card title="needsInput flow" icon="circle-question">
+    Specialists signal when they need more context. The orchestrator relays questions to the user without exposing implementation details.
+  </Card>
+</CardGroup>
+
+## Explore the reference
+
+<CardGroup cols={2}>
+  <Card title="SubAgent class" icon="code" href="/reference/subagent-class">
+    Full API reference for the `SubAgent` class, `asTool()`, and `run()`.
+  </Card>
+  <Card title="Types & schemas" icon="shapes" href="/reference/types">
+    TypeScript types, Zod schemas, and exit definitions used across the framework.
+  </Card>
+  <Card title="Add a new agent" icon="plus" href="/guides/adding-an-agent">
+    Step-by-step guide to creating a new domain specialist agent.
+  </Card>
+  <Card title="Custom tools" icon="wrench" href="/guides/custom-tools">
+    Define AI-callable tools with typed input/output schemas using the Botpress ADK.
+  </Card>
+</CardGroup>

@@ -1,0 +1,260 @@
+---
+title: "Add a new specialist agent to the Multiagente project"
+description: "Step-by-step guide to creating a domain specialist, defining its tools, registering it in the index, and wiring it into the orchestrator routing."
+---
+
+Every specialist in Multiagente — HR, IT, Sales, Finance, and Docs — follows the same pattern: a file in `src/agents/` that defines tools and a `SubAgent` instance, an export in `src/agents/index.ts`, and a single line in the orchestrator's `tools` array in `src/conversations/index.ts`. When the time comes to add a new domain — Legal, Facilities, Procurement, or any other — you follow that same pattern from start to finish. The guide below walks you through creating a Legal specialist as a concrete example.
+
+<Steps>
+  <Step title="Create the agent file">
+    Create `src/agents/legal.ts`. Model it directly on `src/agents/hr.ts`: import `z` and `Autonomous` from `@botpress/runtime`, destructure `Tool`, import `SubAgent`, define your tools, and export the agent at the bottom.
+
+    ```typescript src/agents/legal.ts
+    import { z, Autonomous } from "@botpress/runtime";
+    const { Tool } = Autonomous;
+    import { SubAgent } from "../subagent";
+
+    // ============================================
+    // Legal Tools
+    // ============================================
+    // All tool handlers return hardcoded mock data — in a real agent these would
+    // call a contract management or legal system API. The schemas are what matter:
+    // they define the contract the AI uses to decide which tool to call and how
+    // to present the result.
+
+    const reviewContract = new Tool({
+      name: "reviewContract",
+      description: "Submit a contract for legal review and get a tracking number",
+      input: z.object({
+        contractId: z.string().describe("The contract ID to review"),
+        requesterEmail: z.string().describe("Email of the person requesting the review"),
+        urgency: z.enum(["standard", "urgent"]).describe("Review urgency level"),
+      }),
+      output: z.object({
+        success: z.boolean(),
+        trackingNumber: z.string(),
+        estimatedCompletion: z.string(),
+        message: z.string(),
+      }),
+      handler: async ({ contractId, requesterEmail, urgency }) => ({
+        success: true,
+        trackingNumber: `LEGAL-${Date.now()}`,
+        estimatedCompletion: urgency === "urgent" ? "2 business days" : "5 business days",
+        message: `Contract ${contractId} submitted for review. Confirmation will be sent to ${requesterEmail}.`,
+      }),
+    });
+
+    // ============================================
+    // Legal SubAgent Definition
+    // ============================================
+    export const legalAgent = new SubAgent({
+      name: "legal",
+      description: `Delegate legal tasks to the Legal specialist.
+    Use for: contract reviews, NDA requests, legal policy questions, compliance inquiries.`,
+      instructions: `You are a Legal specialist.
+
+    ## Capabilities
+    - Submit contracts for review (requires: contractId, requesterEmail, urgency)
+
+    ## IMPORTANT: If you don't have required information
+    Return immediately with needsInput=true and list what you need:
+    \`\`\`
+    return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is the contract ID?', 'What email should receive the confirmation?'] }
+    \`\`\`
+
+    ## When you have all required info
+    Call the appropriate tool, then return the results:
+    \`\`\`
+    const result = await reviewContract({ contractId, requesterEmail, urgency })
+    return { action: 'done', success: true, result: 'Contract submitted for review', data: result }
+    \`\`\``,
+      tools: [reviewContract],
+    });
+    ```
+  </Step>
+
+  <Step title="Define your tools">
+    Each tool is an instance of `Autonomous.Tool` with five required fields. Use Zod schemas for `input` and `output` — they serve double duty as TypeScript types and as the JSON schema the AI reads to understand what data to supply.
+
+    ```typescript
+    const reviewContract = new Tool({
+      name: "reviewContract",                           // How the AI refers to the tool in code
+      description: "Submit a contract for legal review and get a tracking number", // What the AI reads to decide when to call it
+      input: z.object({
+        contractId: z.string().describe("The contract ID to review"),
+        requesterEmail: z.string().describe("Email of the person requesting the review"),
+        urgency: z.enum(["standard", "urgent"]).describe("Review urgency level"),
+      }),
+      output: z.object({
+        success: z.boolean(),
+        trackingNumber: z.string(),
+        estimatedCompletion: z.string(),
+        message: z.string(),
+      }),
+      handler: async ({ contractId, requesterEmail, urgency }) => ({
+        success: true,
+        trackingNumber: `LEGAL-${Date.now()}`,
+        estimatedCompletion: urgency === "urgent" ? "2 business days" : "5 business days",
+        message: `Contract ${contractId} submitted for review. Confirmation will be sent to ${requesterEmail}.`,
+      }),
+    });
+    ```
+
+    Call `.describe()` on every input field — the AI uses that text to understand what value to pass.
+
+    <Tip>
+      Add a `description` to output fields too when the field name alone is ambiguous. For example, `z.string().describe("Tracking number in the format LEGAL-{timestamp}")` prevents the AI from misinterpreting the value.
+    </Tip>
+  </Step>
+
+  <Step title="Create the SubAgent">
+    Instantiate `SubAgent` at the bottom of your agent file. The `name`, `description`, and `instructions` each serve a distinct audience.
+
+    ```typescript
+    export const legalAgent = new SubAgent({
+      name: "legal",
+      description: `Delegate legal tasks to the Legal specialist.
+    Use for: contract reviews, NDA requests, legal policy questions, compliance inquiries.`,
+      instructions: `You are a Legal specialist.
+
+    ## Capabilities
+    - Submit contracts for review (requires: contractId, requesterEmail, urgency)
+
+    ## IMPORTANT: If you don't have required information
+    Return immediately with needsInput=true and list what you need:
+    \`\`\`
+    return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is the contract ID?', 'What email should receive the confirmation?'] }
+    \`\`\`
+
+    ## When you have all required info
+    Call the appropriate tool, then return the results:
+    \`\`\`
+    const result = await reviewContract({ contractId, requesterEmail, urgency })
+    return { action: 'done', success: true, result: 'Contract submitted for review', data: result }
+    \`\`\``,
+      tools: [reviewContract],
+    });
+    ```
+
+    <Tip>
+      The `description` field is what the orchestrator's AI reads when deciding whether to delegate. Make it specific and include concrete "Use for:" examples — this is the same pattern used by every existing agent. Compare the HR description: `"Use for: vacation booking, vacation balance checks, benefits information, HR policy questions."` The AI needs unambiguous trigger phrases, not a generic summary.
+    </Tip>
+
+    <Note>
+      The `needsInput` pattern in `instructions` teaches the subagent's AI when to ask for more information rather than guess. When the subagent returns `needsInput: true` with a `questions` array, the orchestrator relays those questions to the user, then re-delegates with the answers in `context`. Include the pattern verbatim — the AI learns from the inline example.
+    </Note>
+  </Step>
+
+  <Step title="Export from agents/index.ts">
+    Open `src/agents/index.ts` and add an export line for your new agent, following the existing pattern:
+
+    <CodeGroup>
+
+    ```typescript Before
+    export { hrAgent } from "./hr";
+    export { itAgent } from "./it";
+    export { salesAgent } from "./sales";
+    export { financeAgent } from "./finance";
+    export { docsAgent } from "./docs";
+    ```
+
+    ```typescript After
+    export { hrAgent } from "./hr";
+    export { itAgent } from "./it";
+    export { salesAgent } from "./sales";
+    export { financeAgent } from "./finance";
+    export { docsAgent } from "./docs";
+    export { legalAgent } from "./legal";
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Register in the orchestrator">
+    Open `src/conversations/index.ts`. Do two things: import the new agent and add it to the `tools` array, then add a bullet to the orchestrator's routing instructions so the AI knows when to delegate to it.
+
+    <CodeGroup>
+
+    ```typescript Import — Before
+    import { hrAgent, itAgent, salesAgent, financeAgent, docsAgent } from "../agents";
+    ```
+
+    ```typescript Import — After
+    import { hrAgent, itAgent, salesAgent, financeAgent, docsAgent, legalAgent } from "../agents";
+    ```
+
+    </CodeGroup>
+
+    Then add `legalAgent.asTool(execute, step)` to the `tools` array and a routing bullet to `instructions`:
+
+    ```typescript src/conversations/index.ts (excerpt)
+    await execute({
+      instructions: `You are an orchestrator that routes user requests to specialist agents.
+    ...
+    ## WHEN TO DELEGATE
+    Delegate to a specialist ONLY when the user has a specific task or question in their domain:
+    - **hr_agent**: vacation booking, leave balance, benefits, HR policies
+    - **it_agent**: password resets, system status, support tickets, IT policies
+    - **sales_agent**: promotions, products, quotes, orders
+    - **finance_agent**: expense reports, budgets, reimbursements
+    - **docs_agent**: Question about the botpress platform
+    - **legal_agent**: contract reviews, NDAs, legal policy questions, compliance inquiries
+    ...`,
+      tools: [
+        escalateToHuman,
+        hrAgent.asTool(execute, step),
+        itAgent.asTool(execute, step),
+        salesAgent.asTool(execute, step),
+        financeAgent.asTool(execute, step),
+        docsAgent.asTool(execute, step),
+        legalAgent.asTool(execute, step),
+      ],
+    });
+    ```
+
+    The `asTool(execute, step)` call wraps the subagent as an `Autonomous.Tool` whose name is `legal_agent` and whose description is the `description` field you wrote in step 3.
+  </Step>
+
+  <Step title="Test">
+    Start the dev server in one terminal, then open a second terminal to chat:
+
+    ```bash
+    # Terminal 1
+    adk dev
+
+    # Terminal 2
+    adk chat
+    ```
+
+    Send a message that should route to the new agent:
+
+    ```
+    I need to submit a vendor contract for legal review.
+    ```
+
+    The orchestrator should delegate to `legal_agent`. Because `contractId` and `requesterEmail` are missing, the agent returns `needsInput: true` and the orchestrator relays its questions:
+
+    ```
+    What is the contract ID? What email should receive the confirmation?
+    ```
+
+    After you provide those values, the agent calls `reviewContract` and returns the tracking number.
+  </Step>
+</Steps>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Custom tools" icon="wrench" href="/guides/custom-tools">
+    Deep dive into building typed tools with Zod schemas and handler functions.
+  </Card>
+  <Card title="Knowledge base" icon="database" href="/guides/knowledge-base">
+    Add a RAG knowledge source to your new agent instead of (or alongside) tools.
+  </Card>
+  <Card title="HR agent reference" icon="user" href="/agents/hr">
+    The full HR agent implementation — the canonical pattern for new specialists.
+  </Card>
+  <Card title="SubAgent class" icon="boxes-stacked" href="/reference/subagent-class">
+    API reference for the SubAgent class, asTool(), and the needsInput flow.
+  </Card>
+</CardGroup>

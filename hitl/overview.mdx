@@ -1,0 +1,176 @@
+---
+title: "Human-in-the-loop escalation overview in Multiagente"
+description: "Learn how Multiagente pauses AI automation, hands off to a human agent using escalateToHuman, and preserves conversation state during the handoff."
+---
+
+Human-in-the-loop (HITL) is the mechanism Multiagente uses to pause AI automation and transfer control of a conversation to a human support agent. When the orchestrator detects a situation it cannot safely handle on its own — a frustrated user, an explicit request for a human, or a repeated specialist failure — it calls the `escalateToHuman` tool, saves the handoff state, and stops processing further messages until a human resolves the issue.
+
+## When escalation triggers
+
+The orchestrator's system instructions define three conditions that require immediate escalation. You can find the full instruction set in `src/conversations/index.ts`.
+
+```typescript
+instructions: `You are an orchestrator that routes user requests to specialist agents.
+
+## WHEN TO ESCALATE TO HUMAN (HITL PROTOCOL)
+You must ALWAYS prioritize user satisfaction and safety. Delegate immediately to the 'escalateToHuman' tool IF:
+- The user explicitly asks to speak to a human, real person, agent, or support.
+- The user shows signs of extreme frustration, anger, or urgency.
+- A specialist agent fails repeatedly or returns a technical error you cannot solve.
+Do not argue with the user, just use the escalation tool.`
+```
+
+The three trigger conditions are:
+
+1. **Explicit human request** — the user asks to speak to a human, real person, agent, or support team.
+2. **Extreme frustration or urgency** — the user shows signs of anger, distress, or high urgency that automation cannot safely absorb.
+3. **Repeated specialist failure** — a specialist agent fails multiple times or returns a technical error the orchestrator cannot resolve.
+
+<Warning>
+The orchestrator must never argue with the user or attempt to de-escalate before calling `escalateToHuman`. The instructions are explicit: escalate immediately.
+</Warning>
+
+## The `escalateToHuman` tool
+
+The tool is defined in `src/tools/escalateTool.ts` using the Botpress ADK `Autonomous.Tool` class.
+
+```typescript
+import { Autonomous, z } from "@botpress/runtime";
+
+export default new Autonomous.Tool({
+  name: "escalateToHuman",
+  description:
+    "ÚSALA OBLIGATORIAMENTE cuando el usuario pida hablar con un humano, esté enfadado, o si los subagentes fallan repetidamente. Esta herramienta pausa la IA y avisa al equipo de soporte humano.",
+  input: z.object({
+    reason: z
+      .string()
+      .describe("La razón exacta por la que se escala al humano (ej: 'El usuario está frustrado' o 'Fallo técnico en subagente')"),
+    summary: z.string().describe("Un resumen estructurado del problema del cliente para que el humano tenga contexto."),
+  }),
+  output: z.object({
+    status: z.string(),
+    messageToUser: z.string(),
+  }),
+  handler: async ({ reason, summary }) => {
+    // Simulación de aviso (Aquí iría la integración con Slack/Zendesk)
+    console.log("\n🚨 --- [ALERTA HITL ACTIVADA] --- 🚨");
+    console.log(`Motivo: ${reason}`);
+    console.log(`Contexto enviado al agente humano: ${summary}`);
+    console.log("------------------------------------\n");
+
+    return {
+      status: "human_notified",
+      messageToUser: "He transferido tu caso a un especialista humano. Por favor, espera un momento en este chat.",
+    };
+  },
+});
+```
+
+**Input schema:**
+
+| Field     | Type   | Description                                                              |
+| --------- | ------ | ------------------------------------------------------------------------ |
+| `reason`  | string | The exact reason for escalation (e.g., "User is frustrated").            |
+| `summary` | string | A structured summary of the customer's problem to give the human context.|
+
+**Output schema:**
+
+| Field           | Type   | Description                                          |
+| --------------- | ------ | ---------------------------------------------------- |
+| `status`        | string | Always returns `"human_notified"` in this simulation.|
+| `messageToUser` | string | The message shown to the user after the handoff.     |
+
+The handler currently logs the escalation details to the console and returns a fixed status. In production, you replace the `console.log` calls with a real integration — see [Integrating with real support systems](#integrating-with-real-support-systems) below.
+
+## HITL state
+
+Multiagente tracks the handoff using three fields on the conversation state schema, defined in `src/conversations/index.ts`:
+
+```typescript
+state: z.object({
+  hitlActive: z.boolean().default(false),
+  hitlActivatedAt: z.number().optional(),
+  hitlMessageToUser: z.string().optional(),
+}),
+```
+
+| Field               | Type    | Default     | Description                                              |
+| ------------------- | ------- | ----------- | -------------------------------------------------------- |
+| `hitlActive`        | boolean | `false`     | Whether a human is currently in control of the chat.     |
+| `hitlActivatedAt`   | number  | `undefined` | Unix timestamp (ms) of when HITL was activated.          |
+| `hitlMessageToUser` | string  | `undefined` | The message displayed to the user at handoff time.       |
+
+This state persists across messages, so the bot continues to defer to the human agent even if the user sends additional messages before a human responds.
+
+## What happens during HITL
+
+While `hitlActive` is `true`, the conversation handler in `src/conversations/index.ts` skips all orchestration logic and logs a message instead:
+
+```typescript
+if (state.hitlActive) {
+  if (wantsResume) {
+    // ... resume flow handled here
+  }
+
+  console.log("Mensaje ignorado por la IA. Un humano está al mando de esta conversación.");
+  return;
+}
+```
+
+Every incoming message that is not a resume keyword is silently dropped from the AI pipeline. The bot does not respond, does not delegate to any specialist, and does not advance any workflow.
+
+<Info>
+The log line `"Un humano está al mando de esta conversación."` is intentional — it gives you a clear signal in your dev server output that HITL is active and messages are being suppressed.
+</Info>
+
+## The `onAfterTool` hook
+
+State is set synchronously as soon as `escalateToHuman` completes, using the `onAfterTool` lifecycle hook inside `execute`:
+
+```typescript
+hooks: {
+  onAfterTool: async ({ tool, output }) => {
+    if (tool.name !== "escalateToHuman") {
+      return;
+    }
+
+    state.hitlActive = true;
+    state.hitlActivatedAt = Date.now();
+    state.hitlMessageToUser =
+      typeof output === "object" && output !== null && "messageToUser" in output
+        ? String((output as { messageToUser?: unknown }).messageToUser ?? "")
+        : "";
+
+    step("🚨 HITL escalado a soporte humano", {
+      executionId: `hitl-${Date.now()}`,
+      agent: "system",
+      task: typeof output === "object" && output !== null && "messageToUser" in output ? String((output as { messageToUser?: unknown }).messageToUser ?? "escalateToHuman") : "escalateToHuman",
+      type: "tool",
+    });
+  },
+},
+```
+
+The hook checks that the completed tool is `escalateToHuman`, then sets `hitlActive`, records the timestamp, and stores `messageToUser` from the tool output into state. The `step()` call emits a debug event that appears in the chat channel during development.
+
+## Integrating with real support systems
+
+The current `escalateToHuman` handler uses `console.log` as a placeholder. In production, replace those lines with a call to your support platform of choice.
+
+<Note>
+Common integration points include:
+- **Slack**: Post a message to a support channel using the Slack Web API, including the `reason` and `summary` fields.
+- **Zendesk**: Create a new ticket via the Zendesk REST API, pre-populated with the conversation summary.
+- **Intercom**: Open a conversation or assign it to a human inbox using the Intercom API.
+
+You can also combine these — for example, post to Slack for immediate alerting and create a Zendesk ticket for tracking.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Resuming bot control" icon="rotate-right" href="/hitl/resuming">
+    Learn how users hand conversation control back to the bot using resume keywords.
+  </Card>
+  <Card title="Orchestrator" icon="network-wired" href="/architecture/orchestrator">
+    Understand how the orchestrator decides when to delegate and when to escalate.
+  </Card>
+</CardGroup>

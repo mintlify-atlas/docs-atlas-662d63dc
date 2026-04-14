@@ -1,0 +1,219 @@
+---
+title: "IT agent: support tickets, passwords, and system access"
+description: "The IT specialist handles password resets, system status checks, ticket creation, and IT policy questions. Route all IT support requests here."
+---
+
+The IT agent is a domain specialist that handles all information-technology support tasks in the Multiagente system. When a user needs a password reset, wants to know if a company system is down, needs to open a support ticket, or has a question about IT security policies, the orchestrator delegates the request to this agent. The IT agent runs in isolated worker mode with four dedicated tools designed to interface with your IT support systems.
+
+## Delegation description
+
+The orchestrator's AI reads the following description to decide when to route a request to the IT agent:
+
+```
+Delegate IT-related tasks to the IT specialist.
+Use for: password resets, system status checks, IT support tickets, IT policy questions.
+```
+
+## SubAgent definition
+
+```typescript
+export const itAgent = new SubAgent({
+  name: "it",
+  description: `Delegate IT-related tasks to the IT specialist.
+Use for: password resets, system status checks, IT support tickets, IT policy questions.`,
+  instructions: `You are an IT support specialist.
+...`,
+  tools: [resetPassword, checkSystemStatus, createTicket, getITPolicies],
+});
+```
+
+## Available tools
+
+<CardGroup cols={2}>
+  <Card title="resetPassword" icon="key">
+    Resets a user's password and generates a temporary one they must change on first login.
+  </Card>
+  <Card title="checkSystemStatus" icon="circle-check">
+    Returns the operational status of all company systems, or a specific system if named.
+  </Card>
+  <Card title="createTicket" icon="ticket">
+    Opens an IT support ticket with a priority level and returns an estimated response time.
+  </Card>
+  <Card title="getITPolicies" icon="shield-halved">
+    Returns IT security policies and guidelines, optionally filtered by topic.
+  </Card>
+</CardGroup>
+
+### resetPassword
+
+Resets a user account password and generates a temporary credential.
+
+**Input**
+
+<ParamField path="body.userId" type="string" required>
+  The user ID of the account to reset.
+</ParamField>
+
+**Output**
+
+<ResponseField name="success" type="boolean" required>
+  Whether the password was successfully reset.
+</ResponseField>
+
+<ResponseField name="temporaryPassword" type="string" required>
+  The generated temporary password. The user must change it on next login.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable confirmation message.
+</ResponseField>
+
+---
+
+### checkSystemStatus
+
+Checks the operational status of company systems and services.
+
+**Input**
+
+<ParamField path="body.system" type="string">
+  Specific system name to check. Omit to retrieve status for all systems.
+</ParamField>
+
+**Output**
+
+<ResponseField name="systems" type="object[]" required>
+  Array of system status records.
+  <Expandable title="properties">
+    <ResponseField name="name" type="string" required>
+      System name (e.g. `Email`, `VPN`, `HR Portal`).
+    </ResponseField>
+    <ResponseField name="status" type="string" required>
+      One of `operational`, `degraded`, or `outage`.
+    </ResponseField>
+    <ResponseField name="message" type="string">
+      Optional detail message when status is not `operational`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### createTicket
+
+Creates an IT support ticket and returns an estimated response time.
+
+**Input**
+
+<ParamField path="body.userId" type="string" required>
+  The user ID reporting the issue.
+</ParamField>
+
+<ParamField path="body.title" type="string" required>
+  Brief description of the issue.
+</ParamField>
+
+<ParamField path="body.description" type="string" required>
+  Detailed description of the problem.
+</ParamField>
+
+<ParamField path="body.priority" type="string" required>
+  Priority level: `low`, `medium`, `high`, or `critical`.
+</ParamField>
+
+**Output**
+
+<ResponseField name="ticketId" type="string" required>
+  Unique ticket identifier (e.g. `IT-1718000000000`).
+</ResponseField>
+
+<ResponseField name="estimatedResponse" type="string" required>
+  Estimated response time based on priority: `48h`, `24h`, `4h`, or `1h`.
+</ResponseField>
+
+---
+
+### getITPolicies
+
+Returns IT security policies and guidelines.
+
+**Input**
+
+<ParamField path="body.topic" type="string">
+  Specific policy topic to filter by. Omit to retrieve all policies.
+</ParamField>
+
+**Output**
+
+<ResponseField name="policies" type="object[]" required>
+  List of policy records.
+  <Expandable title="properties">
+    <ResponseField name="name" type="string" required>
+      Policy name (e.g. `Password Policy`, `VPN Policy`).
+    </ResponseField>
+    <ResponseField name="description" type="string" required>
+      Policy description and key requirements.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example interaction
+
+A user sends:
+
+> "I can't log in — I think I need a password reset."
+
+The orchestrator identifies this as an IT task and delegates it. Because `userId` is required, the IT agent returns `needsInput: true`:
+
+> "What is your user ID?"
+
+After the user replies with their ID, the orchestrator re-delegates. The agent calls `resetPassword` and returns the temporary password, which the orchestrator presents to the user.
+
+<Tip>Response times for `createTicket` are fixed to the priority level: `low` → 48 h, `medium` → 24 h, `high` → 4 h, `critical` → 1 h.</Tip>
+
+## Agent instructions
+
+The IT agent's AI runs under the following system prompt when executing in worker mode.
+
+<Accordion title="Full system prompt">
+
+```
+You are an IT support specialist.
+
+## Capabilities
+- Reset passwords (requires: userId)
+- Check system status (no requirements)
+- Create support tickets (requires: userId, title, description, priority)
+- Provide IT policy information (no requirements)
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your user ID?', 'Describe your issue'] }
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+
+const result = await createTicket({ userId, title, description, priority })
+return { action: 'done', success: true, result: 'Ticket created', data: result }
+```
+
+</Accordion>
+
+## `needsInput` flow
+
+When the IT agent is missing required inputs, it returns this pattern immediately without calling any tool:
+
+```typescript
+return {
+  action: 'done',
+  success: false,
+  needsInput: true,
+  result: 'Need more information',
+  questions: ['What is your user ID?', 'Describe your issue']
+}
+```
+
+The orchestrator relays the questions to the user and re-delegates once the user responds with the missing information.
+
+<Note>`checkSystemStatus` and `getITPolicies` have no required inputs, so the agent calls them immediately without asking any follow-up questions.</Note>

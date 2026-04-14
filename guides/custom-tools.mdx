@@ -1,0 +1,215 @@
+---
+title: "Define and scope custom AI-callable tools in the ADK"
+description: "Build typed Botpress ADK tools with Zod schemas and handler functions, and learn how the AI uses tool descriptions to decide when to call them."
+---
+
+In the Botpress ADK, a tool is a typed, AI-callable function. When the AI encounters a task it cannot answer from memory, it looks at the available tools, reads each tool's `name` and `description`, picks the best match, fills the `input` schema from context, calls the `handler`, and uses the `output` to continue. The AI never sees the handler code — it only ever sees the schemas and descriptions you provide. That means the quality of your descriptions and the clarity of your Zod schemas are the two levers that determine how reliably the AI uses your tools.
+
+## Tool anatomy
+
+Every tool is an instance of `Autonomous.Tool`. Below is the complete `bookVacation` tool from `src/agents/hr.ts`, annotated field by field:
+
+```typescript src/agents/hr.ts
+import { z, Autonomous } from "@botpress/runtime";
+const { Tool } = Autonomous;
+
+const bookVacation = new Tool({
+  // How the AI refers to the tool in the code it generates.
+  // Use camelCase, no spaces.
+  name: "bookVacation",
+
+  // What the AI reads to decide when to call this tool.
+  // Be specific: state the action and the outcome.
+  description: "Book vacation time for an employee",
+
+  // Zod schema for the arguments the AI must supply.
+  // Each field's .describe() call becomes part of the JSON schema the AI reads.
+  input: z.object({
+    employeeId: z.string().describe("The employee ID"),
+    startDate: z.string().describe("Start date (YYYY-MM-DD)"),
+    endDate: z.string().describe("End date (YYYY-MM-DD)"),
+  }),
+
+  // Zod schema for the value the handler returns.
+  // The AI uses this to interpret the result and decide what to do next.
+  output: z.object({
+    success: z.boolean(),
+    confirmationNumber: z.string(),
+    message: z.string(),
+  }),
+
+  // The async function that runs the real (or mock) logic.
+  // Receives the validated input object; must return a value matching output.
+  handler: async ({ employeeId, startDate, endDate }) => ({
+    success: true,
+    confirmationNumber: `VAC-${Date.now()}`,
+    message: `Vacation booked for ${employeeId} from ${startDate} to ${endDate}`,
+  }),
+});
+```
+
+## Input and output schemas
+
+Zod schemas do two jobs simultaneously: they generate TypeScript types for your handler, and they generate the JSON schema the AI reads when deciding what arguments to provide. `.describe()` is the bridge between those two worlds — every description you add on a field becomes a human-readable hint in the AI-visible schema.
+
+```typescript
+// Without .describe() — the AI sees field names only
+input: z.object({
+  employeeId: z.string(),
+  startDate: z.string(),
+  endDate: z.string(),
+})
+
+// With .describe() — the AI understands format and semantics
+input: z.object({
+  employeeId: z.string().describe("The employee ID"),
+  startDate: z.string().describe("Start date (YYYY-MM-DD)"),
+  endDate: z.string().describe("End date (YYYY-MM-DD)"),
+})
+```
+
+<Tip>
+  Always add `.describe()` to every input field. For dates, IDs, and enumerated values especially, include the expected format directly in the description — `"Start date (YYYY-MM-DD)"` prevents the AI from guessing `"December 20"` instead of `"2024-12-20"`.
+</Tip>
+
+Use `z.enum()` when a field has a fixed set of valid values. The ADK exposes the allowed values to the AI as a JSON Schema `enum`, so it will never supply an out-of-range string:
+
+```typescript src/agents/it.ts (createTicket)
+const createTicket = new Tool({
+  name: "createTicket",
+  description: "Create an IT support ticket",
+  input: z.object({
+    title: z.string().describe("Brief description of the issue"),
+    description: z.string().describe("Detailed description"),
+    priority: z.enum(["low", "medium", "high", "critical"]).describe("Priority level"),
+    userId: z.string().describe("User reporting the issue"),
+  }),
+  output: z.object({
+    ticketId: z.string(),
+    estimatedResponse: z.string(),
+  }),
+  handler: async ({ title, priority, userId }) => {
+    const responseTime = { low: "48h", medium: "24h", high: "4h", critical: "1h" };
+    return {
+      ticketId: `IT-${Date.now()}`,
+      estimatedResponse: responseTime[priority],
+    };
+  },
+});
+```
+
+Use `.optional()` for fields the AI may omit when they are not relevant:
+
+```typescript src/agents/it.ts (checkSystemStatus)
+input: z.object({
+  system: z.string().optional().describe("Specific system to check, or omit for all"),
+})
+```
+
+## Mock vs. real handlers
+
+All handlers in the existing agents return hardcoded mock data. This is intentional — it lets you validate routing, schema design, and the `needsInput` flow before connecting a real API. The schemas are the contract; the handler is an implementation detail.
+
+<CodeGroup>
+
+```typescript Mock handler (current pattern)
+handler: async ({ employeeId, startDate, endDate }) => ({
+  success: true,
+  confirmationNumber: `VAC-${Date.now()}`,
+  message: `Vacation booked for ${employeeId} from ${startDate} to ${endDate}`,
+}),
+```
+
+```typescript Real handler (swap in when ready)
+handler: async ({ employeeId, startDate, endDate }) => {
+  const response = await fetch("https://your-hr-api.example.com/vacations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ employeeId, startDate, endDate }),
+  });
+  const data = await response.json();
+  return {
+    success: data.ok,
+    confirmationNumber: data.confirmationNumber,
+    message: data.message,
+  };
+},
+```
+
+</CodeGroup>
+
+The shape of the return value must match the `output` Zod schema regardless of whether the handler is mocked or real.
+
+## Scoping tools to specialists
+
+Tools are passed to a `SubAgent` constructor and are only available to that specialist. The orchestrator never has direct access to them — it only sees the subagent as a single tool (`hr_agent`, `it_agent`, etc.) with the subagent's own `description`.
+
+```typescript src/agents/hr.ts
+export const hrAgent = new SubAgent({
+  name: "hr",
+  description: `Delegate HR-related tasks to the HR specialist.
+Use for: vacation booking, vacation balance checks, benefits information, HR policy questions.`,
+  instructions: `You are an HR specialist. ...`,
+  tools: [bookVacation, checkVacationBalance, getBenefits], // scoped to hrAgent only
+});
+```
+
+This scoping has two practical benefits: the orchestrator's context window stays small (it never loads tool schemas for every domain), and specialists can define tools with generic names (`createTicket`, `getExpenseReport`) without name collisions.
+
+## Error handling in handlers
+
+If a handler throws an unhandled exception, the subagent's `run()` method catches it and returns a structured failure result to the orchestrator:
+
+```typescript src/subagent/subagent.ts (catch block)
+return {
+  success: false,
+  result: `Error occurred: ${error?.message || "Unknown error"}`,
+  needsInput: false,
+};
+```
+
+The orchestrator receives this and can respond to the user gracefully. You do not need to wrap every handler in a try/catch — the `SubAgent` framework handles it. That said, for handlers that call external APIs, catch network errors explicitly and return `success: false` with a human-readable `message` in the output schema so the orchestrator has useful text to relay.
+
+## The `needsInput` pattern
+
+When a required input is missing and the AI should ask the user rather than guess, the subagent returns a `done` exit with `needsInput: true` and a `questions` array. This pattern is taught to the subagent's AI through its `instructions` system prompt:
+
+```typescript src/agents/hr.ts (instructions excerpt)
+instructions: `You are an HR specialist.
+
+## IMPORTANT: If you don't have required information
+Return immediately with needsInput=true and list what you need:
+\`\`\`
+return { action: 'done', success: false, needsInput: true, result: 'Need more information', questions: ['What is your employee ID?', 'What dates would you like off?'] }
+\`\`\`
+
+## When you have all required info
+Call the appropriate tool, then return the results:
+\`\`\`
+const result = await bookVacation({ employeeId, startDate, endDate })
+return { action: 'done', success: true, result: 'Vacation booked', data: result }
+\`\`\``
+```
+
+The orchestrator receives the `needsInput: true` result and relays the questions to the user. On the next message, the orchestrator re-delegates to the subagent with the new information supplied in `context`. The subagent sees the context, skips the `needsInput` branch, and calls the tool.
+
+<Note>
+  The inline code examples inside `instructions` are load-bearing — the AI uses them as few-shot examples to learn the exact return format. Keep the pattern verbatim and adapt only the field names and question text for your domain.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Add a new agent" icon="plus" href="/guides/adding-an-agent">
+    End-to-end walkthrough that puts all these tool concepts together in a new specialist.
+  </Card>
+  <Card title="Knowledge base" icon="database" href="/guides/knowledge-base">
+    When to use a knowledge source instead of a tool for unstructured text.
+  </Card>
+  <Card title="HR agent reference" icon="user" href="/agents/hr">
+    Full source for bookVacation, checkVacationBalance, and getBenefits.
+  </Card>
+  <Card title="IT agent reference" icon="monitor" href="/agents/it">
+    Full source for createTicket, resetPassword, and checkSystemStatus.
+  </Card>
+</CardGroup>

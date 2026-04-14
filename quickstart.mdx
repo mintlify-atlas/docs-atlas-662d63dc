@@ -1,80 +1,137 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with Multiagente in under five minutes"
+description: "Go from zero to a working bot: install Bun and the ADK CLI, start the dev server, test all five specialist domains, and deploy to Botpress Cloud."
 ---
 
-## Get started in three steps
+This guide walks you through everything you need to run Multiagente locally and deploy it to Botpress Cloud. By the end you will have a working bot that routes messages to the HR, IT, Sales, Finance, and Docs specialist agents and escalates to human support when needed.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install Bun and the ADK CLI">
+    Multiagente uses [Bun](https://bun.sh) as its runtime and package manager, and the Botpress ADK CLI (`adk`) to run and deploy the agent.
 
-### Step 1: Set up your local environment
+    Install Bun by following the instructions at [bun.sh](https://bun.sh). For the ADK CLI, follow the installation instructions in the [Botpress ADK documentation](https://botpress.com/docs/adk).
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    Confirm both tools are available:
 
-### Step 2: Deploy your changes
+    ```bash
+    bun --version
+    adk --version
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Clone the repo and install dependencies">
+    Clone the Multiagente repository and install its dependencies with Bun:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    git clone https://github.com/alcorher/multiagente.git
+    cd multiagente
+    bun install
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    The project depends on `@botpress/runtime` and `llmz`. Bun resolves and installs both from the lockfile in seconds.
+  </Step>
 
-### Step 3: Go live
+  <Step title="Start the dev server">
+    Run the dev server with hot reload. Any change you make to source files is picked up automatically without restarting.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash
+    bun run dev
+    ```
+
+    This runs `adk dev` under the hood. The agent starts on the default model `cerebras:gpt-oss-120b` with two channels enabled:
+
+    | Integration | Version |
+    |---|---|
+    | `chat` | `0.7.3` |
+    | `webchat` | `0.3.0` |
+
+    Leave the dev server running in this terminal and open a second terminal for the next step.
+  </Step>
+
+  <Step title="Test with adk chat">
+    With the dev server running, open a second terminal and start a chat session:
+
+    ```bash
+    adk chat
+    ```
+
+    <Tip>
+      `adk chat` connects directly to the running dev server and lets you send messages without a browser or external client. Use it to verify routing and HITL behavior before deploying.
+    </Tip>
+
+    Send a test message to each specialist domain to confirm routing works end-to-end:
+
+    <CodeGroup>
+
+    ```bash HR
+    # Vacation and leave
+    What's my vacation balance?
+    ```
+
+    ```bash IT
+    # Password and access
+    Reset my password
+    ```
+
+    ```bash Sales
+    # Products and quotes
+    What are the current promotions?
+    ```
+
+    ```bash Finance
+    # Expenses and budgets
+    Submit an expense report
+    ```
+
+    ```bash Docs
+    # Botpress platform questions
+    How do I add an integration?
+    ```
+
+    </CodeGroup>
+
+    The orchestrator routes each message to the matching specialist and returns its result as a single reply.
+
+    <Note>
+      To test the HITL flow, ask to speak to a human ("I need to talk to a real person"). The bot activates HITL mode and pauses AI responses. To hand control back to the bot, send one of the resume keywords: `resume bot` or `volver al bot`.
+    </Note>
+  </Step>
+
+  <Step title="Deploy to Botpress Cloud">
+    When you are ready to go live, deploy the agent with a single command:
+
+    ```bash
+    bun run deploy
+    ```
+
+    This runs `adk deploy`, which builds the project and pushes it to Botpress Cloud. You can also run the build step separately before deploying:
+
+    ```bash
+    bun run build
+    bun run deploy
+    ```
+
+    | Script | Command |
+    |---|---|
+    | `bun run dev` | `adk dev` |
+    | `bun run build` | `adk build` |
+    | `bun run deploy` | `adk deploy` |
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture overview" icon="sitemap" href="architecture/overview">
+    Understand how the orchestrator conversation handler and specialist agents are structured.
+  </Card>
+  <Card title="HITL escalation" icon="headset" href="hitl/overview">
+    Learn how the `escalateToHuman` tool pauses automation and how conversations resume.
+  </Card>
+  <Card title="Add a new agent" icon="plus" href="guides/adding-an-agent">
+    Step-by-step guide to creating a new domain specialist agent.
+  </Card>
+  <Card title="Configuration" icon="gear" href="config/agent-config">
+    Explore `agent.config.ts` — models, state schemas, and enabled integrations.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,107 @@
+---
+title: 'Build and deploy your Multiagente bot to Botpress Cloud'
+description: 'Build and deploy Multiagente with adk build and adk deploy, verify with adk chat, and use MCP debugging tools to inspect logs and traces.'
+---
+
+Multiagente ships from your local machine to Botpress Cloud through three CLI commands: `adk build`, `adk deploy`, and optionally `adk chat` for a quick smoke test. The same commands are available as npm scripts so you can run them with `bun run` without having `adk` on your shell path directly — though the `adk` CLI must still be installed.
+
+## npm scripts
+
+All three workflow commands are defined in `package.json`:
+
+```json package.json
+"scripts": {
+  "dev": "adk dev",
+  "build": "adk build",
+  "deploy": "adk deploy"
+}
+```
+
+Run any of them with `bun run <script>` or call `adk` directly.
+
+<Warning>
+  The `adk` CLI must be available in your `PATH` before running any of these commands. Verify with `adk --version`. If the command is not found, install or re-link the ADK CLI before continuing.
+</Warning>
+
+## Deployment steps
+
+<Steps>
+  <Step title="Build">
+    Run `adk build` (or `bun run build`) to compile the project, validate `agent.config.ts`, and generate the TypeScript types that the rest of the codebase depends on.
+
+    ```bash
+    adk build
+    # or
+    bun run build
+    ```
+
+    Fix any type errors or configuration warnings before moving to the next step. The build output confirms which integrations and conversation handlers were detected.
+  </Step>
+
+  <Step title="Deploy">
+    Run `adk deploy` (or `bun run deploy`) to push the built agent to Botpress Cloud. This uploads your conversation handlers, tools, workflows, and configuration.
+
+    ```bash
+    adk deploy
+    # or
+    bun run deploy
+    ```
+
+    The CLI will print the deployed agent URL and version once the upload completes.
+  </Step>
+
+  <Step title="Verify with adk chat">
+    Run `adk chat` to open an interactive terminal session with the deployed agent. Send a test message to confirm the orchestrator routes correctly and responds.
+
+    ```bash
+    adk chat
+    ```
+
+    <Note>
+      `adk chat` connects to the live deployed agent via the `chat` integration. It is a quick way to confirm the deployment succeeded before sharing the webchat URL with end users.
+    </Note>
+  </Step>
+
+  <Step title="Debug">
+    If the agent behaves unexpectedly, use the MCP tools provided by the ADK dev server to inspect logs and traces without leaving your editor.
+
+    | Tool | What it returns |
+    | --- | --- |
+    | `adk_get_dev_logs` | Dev server logs, build output, errors, and warnings |
+    | `adk_send_message` | Send a test message and receive responses programmatically |
+    | `adk_query_traces` | Trace spans for conversations and workflow executions |
+
+    For rapid iteration during development, use `adk dev` instead of the full build-deploy cycle — see the tip below.
+  </Step>
+</Steps>
+
+<Tip>
+  `adk dev` starts a local dev server with hot reload. Your changes to conversation handlers, tools, and workflows take effect immediately without a full deploy. Use `adk dev` during active development and only run `adk deploy` when you are ready to publish a version to Botpress Cloud.
+
+  ```bash
+  bun run dev
+  # or
+  adk dev
+  ```
+</Tip>
+
+## MCP debugging tools
+
+The ADK dev server exposes an MCP server that AI coding assistants and editors can call directly. Run `adk mcp:init --all` to generate the editor configuration, then use these tools for debugging:
+
+- **`adk_send_message`** — send a test message to the running bot and inspect the response without opening a terminal chat session
+- **`adk_query_traces`** — query execution traces to see which tools were called, in what order, and what they returned
+- **`adk_get_dev_logs`** — fetch build output, runtime errors, and server warnings from the dev process
+
+<Note>
+  The dev server must be running (`adk dev`) for the MCP debugging tools to work. They connect to the local server, not the deployed cloud instance.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Agent configuration" icon="settings" href="/config/agent-config">
+    Understand what agent.config.ts controls before you deploy.
+  </Card>
+  <Card title="Integrations" icon="plug" href="/config/integrations">
+    How chat and webchat channels are enabled for deployment.
+  </Card>
+</CardGroup>
